@@ -26,14 +26,21 @@ actor APIClient {
     private var baseURL: String
     private var username: String?
     private var password: String?
+    private let session: URLSession
 
     // Default to localhost to avoid leaking a personal LAN IP in open source repos.
     nonisolated static let defaultServer = "127.0.0.1:4096"
 
-    init(baseURL: String = APIClient.defaultServer, username: String? = nil, password: String? = nil) {
+    init(
+        baseURL: String = APIClient.defaultServer,
+        username: String? = nil,
+        password: String? = nil,
+        session: URLSession = .shared
+    ) {
         self.baseURL = Self.normalizeBaseURL(baseURL)
         self.username = username
         self.password = password
+        self.session = session
     }
 
     func configure(baseURL: String, username: String? = nil, password: String? = nil) {
@@ -57,7 +64,7 @@ actor APIClient {
         method: String = "GET",
         queryItems: [URLQueryItem]? = nil,
         body: Data? = nil
-    ) async throws -> (Data, URLResponse) {
+    ) async throws -> (Data, HTTPURLResponse) {
         let url: URL
         if let queryItems {
             guard var components = URLComponents(string: "\(baseURL)\(path)") else {
@@ -95,11 +102,22 @@ actor APIClient {
             request.httpBody = body
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.httpError(statusCode: 0, data: data)
+        }
+        guard (200..<300).contains(http.statusCode) else {
             throw APIError.httpError(statusCode: http.statusCode, data: data)
         }
-        return (data, response)
+        return (data, http)
+    }
+
+    private func acceptEmptyOrJSONBoolean(_ data: Data) throws {
+        if let text = String(data: data, encoding: .utf8),
+           text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return
+        }
+        _ = try JSONDecoder().decode(Bool.self, from: data)
     }
 
     func health() async throws -> HealthResponse {
@@ -217,7 +235,8 @@ actor APIClient {
     }
 
     func deleteSession(sessionID: String) async throws {
-        _ = try await makeRequest(path: "/session/\(sessionID)", method: "DELETE")
+        let (data, _) = try await makeRequest(path: "/session/\(sessionID)", method: "DELETE")
+        try acceptEmptyOrJSONBoolean(data)
     }
 
     func messages(sessionID: String, limit: Int? = nil) async throws -> [MessageWithParts] {
@@ -412,21 +431,21 @@ actor APIClient {
         )
         let bodyData = try JSONEncoder().encode(body)
         let queryItems = directory.map { [URLQueryItem(name: "directory", value: $0)] }
-        let (_, response) = try await makeRequest(
+        let (data, http) = try await makeRequest(
             path: "/session/\(sessionID)/prompt_async",
             method: "POST",
             queryItems: queryItems,
             body: bodyData
         )
-        if let http = response as? HTTPURLResponse, http.statusCode != 204 {
-            throw APIError.httpError(statusCode: http.statusCode, data: Data())
+        if http.statusCode != 204 {
+            throw APIError.httpError(statusCode: http.statusCode, data: data)
         }
     }
 
     func abort(sessionID: String) async throws {
-        let (_, response) = try await makeRequest(path: "/session/\(sessionID)/abort", method: "POST")
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw APIError.httpError(statusCode: http.statusCode, data: Data())
+        let (data, http) = try await makeRequest(path: "/session/\(sessionID)/abort", method: "POST")
+        if http.statusCode != 200 {
+            throw APIError.httpError(statusCode: http.statusCode, data: data)
         }
     }
 
@@ -471,13 +490,13 @@ actor APIClient {
             let response: PermissionResponse
         }
         let data = try JSONEncoder().encode(Body(response: response))
-        let (_, httpResponse) = try await makeRequest(
+        let (responseData, http) = try await makeRequest(
             path: "/session/\(sessionID)/permissions/\(permissionID)",
             method: "POST",
             body: data
         )
-        if let http = httpResponse as? HTTPURLResponse, http.statusCode != 200 {
-            throw APIError.httpError(statusCode: http.statusCode, data: Data())
+        if http.statusCode != 200 {
+            throw APIError.httpError(statusCode: http.statusCode, data: responseData)
         }
     }
 
@@ -491,17 +510,13 @@ actor APIClient {
             let answers: [[String]]
         }
         let data = try JSONEncoder().encode(Body(answers: answers))
-        let (_, response) = try await makeRequest(path: "/question/\(requestID)/reply", method: "POST", body: data)
-        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-            throw APIError.httpError(statusCode: http.statusCode, data: Data())
-        }
+        let (responseData, _) = try await makeRequest(path: "/question/\(requestID)/reply", method: "POST", body: data)
+        try acceptEmptyOrJSONBoolean(responseData)
     }
 
     func rejectQuestion(requestID: String) async throws {
-        let (_, response) = try await makeRequest(path: "/question/\(requestID)/reject", method: "POST")
-        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-            throw APIError.httpError(statusCode: http.statusCode, data: Data())
-        }
+        let (responseData, _) = try await makeRequest(path: "/question/\(requestID)/reject", method: "POST")
+        try acceptEmptyOrJSONBoolean(responseData)
     }
 
     func providers() async throws -> ProvidersResponse {
