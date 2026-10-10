@@ -10,43 +10,106 @@ extension AppState {
         sseTask?.cancel()
         sseWatchdogTask?.cancel()
         sseWatchdogTask = nil
-        sseTask = Task {
-            var attempt = 0
-            while !Task.isCancelled {
-                let info = Self.serverURLInfo(serverURL)
-                guard info.isAllowed, let baseURL = info.normalized else {
-                    return
-                }
+        sseConnectionToken &+= 1
+        let token = sseConnectionToken
+        let host = captureHostRequestSnapshot()
+        sseTask = Task { [weak self] in
+            await self?.runSSEConnection(token: token, host: host)
+        }
+    }
 
-                let stream = await sseClient.connect(
+    func captureSSEConnectionToken() -> UInt64 {
+        sseConnectionToken
+    }
+
+    func isCurrentSSEConnection(_ token: UInt64) -> Bool {
+        sseConnectionToken == token
+    }
+
+    private func isOwnedSSEConnection(_ token: UInt64, _ host: HostRequestSnapshot) -> Bool {
+        isCurrentSSEConnection(token) && isCurrentHostRequest(host)
+    }
+
+    private func runSSEConnection(token: UInt64, host: HostRequestSnapshot) async {
+        var attempt = 0
+        while !Task.isCancelled && isOwnedSSEConnection(token, host) {
+            let info = Self.serverURLInfo(serverURL)
+            guard info.isAllowed, let baseURL = info.normalized else { break }
+            let credentialUser = username.isEmpty ? nil : username
+            let credentialPassword = password.isEmpty ? nil : password
+            let lease: SSEStreamLease
+            if let client = sseClient as? SSEClient {
+                lease = await client.connectLease(
                     baseURL: baseURL,
-                    username: username.isEmpty ? nil : username,
-                    password: password.isEmpty ? nil : password
+                    username: credentialUser,
+                    password: credentialPassword
                 )
-
+            } else {
+                lease = SSEStreamLease(
+                    events: await sseClient.connect(
+                        baseURL: baseURL,
+                        username: credentialUser,
+                        password: credentialPassword
+                    ),
+                    cancel: {}
+                )
+            }
+            let cancelLease = lease.cancel
+            let shouldContinue = await withTaskCancellationHandler {
+                guard !Task.isCancelled, isOwnedSSEConnection(token, host) else { return false }
                 do {
                     await bootstrapSyncCurrentSession(reason: "sse.reconnect")
+                    guard !Task.isCancelled, isOwnedSSEConnection(token, host) else { return false }
                     sseLastFrameAt = Date()
-                    launchSSEWatchdog()
-                    for try await event in stream {
+                    launchSSEWatchdog(token: token)
+                    for try await event in lease.events {
+                        guard !Task.isCancelled, isOwnedSSEConnection(token, host) else { return false }
                         attempt = 0
                         await handleSSEEvent(event)
+                        guard !Task.isCancelled, isOwnedSSEConnection(token, host) else { return false }
                     }
-                } catch {
-                    // Reconnect with exponential backoff
+                    guard !Task.isCancelled, isOwnedSSEConnection(token, host) else { return false }
+                    stopOwnedSSEWatchdog(token: token)
                     attempt += 1
-                    let base = min(30.0, pow(2.0, Double(attempt)))
-                    try? await Task.sleep(for: .seconds(base))
+                    await sseReconnectSleep(sseBackoffDelay(attempt))
+                    return true
+                } catch {
+                    guard !Task.isCancelled, isOwnedSSEConnection(token, host) else { return false }
+                    stopOwnedSSEWatchdog(token: token)
+                    if let failure = error as? SSEStreamFailure, failure.pausesAutomaticRetry {
+                        pauseSSEAfterAuthenticationFailure(failure)
+                        return false
+                    }
+                    attempt += 1
+                    await sseReconnectSleep(sseBackoffDelay(attempt))
+                    return true
                 }
-
-                // The stream is gone (clean end or error); the watchdog only
-                // covers "connected but silent", so stop it while the client
-                // is between connections (backoff). It relaunches after the
-                // next successful connect + bootstrap.
-                sseWatchdogTask?.cancel()
-                sseWatchdogTask = nil
+            } onCancel: {
+                cancelLease()
             }
+            cancelLease()
+            if !shouldContinue { break }
         }
+        if sseConnectionToken == token {
+            stopOwnedSSEWatchdog(token: token)
+            sseTask = nil
+        }
+    }
+
+    private func sseBackoffDelay(_ attempt: Int) -> TimeInterval {
+        min(30, pow(2.0, Double(attempt)))
+    }
+
+    private func pauseSSEAfterAuthenticationFailure(_ failure: SSEStreamFailure) {
+        guard case .httpStatus(let code) = failure else { return }
+        let message = friendlyConnectionError(APIError.httpError(statusCode: code, data: Data()))
+        connectionError = message
+        isConnected = false
+        updateConnectionDiagnostic(
+            phase: .failed,
+            message: message,
+            recoveryHint: L10n.t(.hostDiagnosticHintVerifyHostConfig)
+        )
     }
 
     /// Starts the heartbeat watchdog once per connected stream. Not a poller:
@@ -54,15 +117,23 @@ extension AppState {
     /// heartbeat counts) arrived, and only after `sseSilenceThreshold` of
     /// silence runs one reconciliation. On a host without heartbeats this
     /// degrades to a low-frequency reconcile every ~20-25s of silence.
-    private func launchSSEWatchdog() {
+    private func launchSSEWatchdog(token: UInt64) {
+        guard sseConnectionToken == token else { return }
         guard sseWatchdogTask == nil else { return }
         sseWatchdogTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(Self.sseWatchdogCheckInterval))
                 guard !Task.isCancelled else { return }
-                await self?.checkSSEWatchdog()
+                guard let self, self.sseConnectionToken == token else { return }
+                await self.checkSSEWatchdog()
             }
         }
+    }
+
+    private func stopOwnedSSEWatchdog(token: UInt64) {
+        guard sseConnectionToken == token else { return }
+        sseWatchdogTask?.cancel()
+        sseWatchdogTask = nil
     }
 
     /// One watchdog check. When the stream has been silent past the threshold,
@@ -79,6 +150,7 @@ extension AppState {
     }
 
     func disconnectSSE() {
+        sseConnectionToken &+= 1
         sseTask?.cancel()
         sseTask = nil
         sseWatchdogTask?.cancel()
@@ -348,6 +420,16 @@ extension AppState {
             sessionID: sessionID,
             previous: previous,
             current: current,
+            existing: sessionActivities[sessionID],
+            messages: messages,
+            currentSessionID: currentSessionID
+        )
+    }
+
+    func recomputeSessionActivityAfterMessageSnapshot(sessionID: String) {
+        sessionActivities[sessionID] = ActivityTracker.reconcileRunningActivity(
+            sessionID: sessionID,
+            status: sessionStatuses[sessionID],
             existing: sessionActivities[sessionID],
             messages: messages,
             currentSessionID: currentSessionID
