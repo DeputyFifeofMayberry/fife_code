@@ -582,6 +582,10 @@ private func makeMessage(
 }
 
 private func persistedDraft(_ defaults: UserDefaults, _ sessionID: String) -> String? {
+    if let data = defaults.data(forKey: AppState.draftInputsByHostKey),
+       let decoded = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+        return decoded.values.compactMap { $0[sessionID] }.first
+    }
     guard let data = defaults.data(forKey: AppState.draftInputsBySessionKey),
           let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
         return nil

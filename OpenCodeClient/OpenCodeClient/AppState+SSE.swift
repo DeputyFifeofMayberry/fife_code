@@ -459,9 +459,7 @@ extension AppState {
         messageStore.removePartTypes(forSession: sessionID)
         statsStore.remove(sessionID: sessionID)
         revertResetPendingSessionIDs.remove(sessionID)
-
-        persistDraftInputs()
-        persistSelectedModelMap()
+        removeHostPreference(sessionID: sessionID)
     }
 
     func noteConfirmedMissingSession(_ sessionID: String, clearSelection: Bool) {

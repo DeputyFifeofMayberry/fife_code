@@ -82,8 +82,8 @@ struct HostProfileTests {
         }
     }
 
-    @Test @MainActor func applySSHTunnelProfileToRuntime() {
-        withIsolatedHostProfileDefaults {
+    @Test @MainActor func applySSHTunnelProfileToRuntime() throws {
+        try withIsolatedHostProfileDefaults {
             let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
             let profile = HostProfile(
                 name: "SSH Lab",
@@ -93,7 +93,7 @@ struct HostProfileTests {
                 ssh: SSHTunnelConfig(isEnabled: false, host: "gateway.example.invalid", port: 8006, username: "opencode", remotePort: 19001)
             )
 
-            state.saveHostProfile(profile, makeCurrent: true)
+            try state.saveHostProfile(profile, makeCurrent: true)
 
             #expect(state.currentHostProfileID == profile.id)
             #expect(state.serverURL == APIClient.defaultServer)
@@ -157,7 +157,7 @@ private extension HostProfileImportPayload {
 }
 
 @MainActor
-private func withIsolatedHostProfileDefaults(_ body: () -> Void) {
+private func withIsolatedHostProfileDefaults(_ body: () throws -> Void) rethrows {
     let keys = [
         AppState.serverURLKey,
         AppState.usernameKey,
@@ -176,7 +176,7 @@ private func withIsolatedHostProfileDefaults(_ body: () -> Void) {
         }
     }
 
-    body()
+    try body()
 }
 
 // MARK: - AppError Tests

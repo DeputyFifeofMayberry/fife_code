@@ -355,3 +355,117 @@ final class OpenCodeClientUITests: XCTestCase {
         }
     }
 }
+
+final class HostEditorCredentialUITests: XCTestCase {
+    private let secret = "unsaved-secret"
+    private let logDir = FileManager.default.temporaryDirectory.appendingPathComponent("HostEditorCredentialUITests", isDirectory: true).path
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    @MainActor
+    func testSaveFailurePresentsAlertAndLeavesUncommitted() throws {
+        let app = try launchEditor(extraArguments: ["UITEST_HOST_EDITOR_SAVE_FAIL"])
+        try typeSecret(app)
+        app.buttons["host-save"].tap()
+
+        let alert = app.alerts["Host Error"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 8), dump(app, "save-fail-no-alert"))
+        let alertText = alert.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | ")
+        XCTAssertTrue(
+            alertText.contains("Keychain operation failed") || alertText.contains("Keychain 操作失败"),
+            dump(app, "save-fail-alert-text") + "\n" + alertText
+        )
+        let statusText = alertText.replacingOccurrences(of: ",", with: "")
+        XCTAssertTrue(statusText.contains("-25308"), dump(app, "save-fail-status") + "\n" + alertText)
+        let ok = alert.buttons["OK"].exists ? alert.buttons["OK"] : alert.buttons["确定"]
+        if ok.exists { ok.tap() }
+
+        XCTAssertTrue(app.buttons["host-save"].waitForExistence(timeout: 4), dump(app, "save-fail-dismissed"))
+        XCTAssertEqual(recordValue(app), "uncommitted", dump(app, "save-fail-record"))
+        XCTAssertEqual(fieldValue(app), secret, dump(app, "save-fail-field"))
+    }
+
+    @MainActor
+    func testParentRebuildKeepsPasswordThenWritesFake() throws {
+        let app = try launchEditor(extraArguments: ["UITEST_HOST_EDITOR_REBUILD"])
+        try typeSecret(app)
+        XCTAssertEqual(fieldValue(app), secret, dump(app, "rebuild-before-field"))
+
+        let rebuild = app.descendants(matching: .any)["editor-identity-rebuild"]
+        XCTAssertTrue(rebuild.waitForExistence(timeout: 4), dump(app, "rebuild-missing"))
+        XCTAssertEqual(rebuild.label, "g0", dump(app, "rebuild-generation"))
+        if !rebuild.isHittable {
+            app.swipeDown()
+        }
+        rebuild.tap()
+        let advanced = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "g1"), object: rebuild)
+        XCTAssertEqual(XCTWaiter().wait(for: [advanced], timeout: 4), .completed, dump(app, "rebuild-not-advanced"))
+        XCTAssertEqual(fieldValue(app), secret, dump(app, "rebuild-after-field"))
+
+        app.buttons["host-save"].tap()
+        let deadline = Date().addingTimeInterval(8)
+        while recordValue(app) != secret && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertEqual(recordValue(app), secret, dump(app, "rebuild-record"))
+    }
+
+    @MainActor
+    private func launchEditor(extraArguments: [String]) throws -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["UITEST_HOST_EDITOR_CREDENTIAL_FIXTURE"] + extraArguments
+        app.launch()
+        if !app.buttons["settings-current-host"].waitForExistence(timeout: 3) {
+            if app.tabBars.buttons["Settings"].exists {
+                app.tabBars.buttons["Settings"].tap()
+            } else if app.buttons["Settings"].exists {
+                app.buttons["Settings"].tap()
+            }
+        }
+        XCTAssertTrue(app.buttons["settings-current-host"].waitForExistence(timeout: 8), dump(app, "settings-missing"))
+        app.buttons["settings-current-host"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["host-password"].waitForExistence(timeout: 8), dump(app, "editor-missing"))
+        XCTAssertTrue(app.buttons["host-save"].waitForExistence(timeout: 4), dump(app, "save-missing"))
+        return app
+    }
+
+    @MainActor
+    private func typeSecret(_ app: XCUIApplication) throws {
+        let field = app.descendants(matching: .any)["host-password"]
+        field.tap()
+        field.typeText(secret)
+    }
+
+    @MainActor
+    private func fieldValue(_ app: XCUIApplication) -> String {
+        let field = app.descendants(matching: .any)["host-password"]
+        return field.value as? String ?? ""
+    }
+
+    @MainActor
+    private func recordValue(_ app: XCUIApplication) -> String {
+        let nodes = app.descendants(matching: .any).matching(identifier: "host-credential-record")
+        var values: [String] = []
+        for index in 0..<nodes.count {
+            let value = nodes.element(boundBy: index).value as? String ?? ""
+            if !value.isEmpty { values.append(value) }
+        }
+        if values.contains(secret) { return secret }
+        return values.first ?? ""
+    }
+
+    @MainActor
+    private func dump(_ app: XCUIApplication, _ name: String) -> String {
+        let text = app.debugDescription
+        let url = URL(fileURLWithPath: logDir).appendingPathComponent("W04_rework6_\(name).hierarchy.txt")
+        try? FileManager.default.createDirectory(at: URL(fileURLWithPath: logDir), withIntermediateDirectories: true)
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+        let ids = app.descendants(matching: .any).allElementsBoundByIndex.prefix(80).map { element in
+            "\(element.identifier)|\(element.label)|\(String(describing: element.value ?? ""))"
+        }.joined(separator: "\n")
+        return "hierarchy \(url.path)\n\(ids)"
+    }
+}

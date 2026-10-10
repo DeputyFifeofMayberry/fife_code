@@ -174,6 +174,8 @@ final class AppState {
     static let aiBuilderLastOKTestedAtKey = "aiBuilderLastOKTestedAt"
     static let draftInputsBySessionKey = "draftInputsBySession"
     static let selectedModelBySessionKey = "selectedModelBySession"
+    static let draftInputsByHostKey = "draftInputsByHost.v1"
+    static let selectedModelByHostKey = "selectedModelByHost.v1"
     static let selectedProjectWorktreeKey = "selectedProjectWorktree"
     static let customProjectPathKey = "customProjectPath"
     static let hostProfilesKey = "hostProfiles.v1"
@@ -195,7 +197,8 @@ final class AppState {
         deepLinkHydratesSelection: Bool = true,
         clientCapabilityStore: ClientCapabilityCallbackStore = .applicationSupport(),
         clientCapabilityURLOpener: (@MainActor (URL) async -> Bool)? = nil,
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        hostCredentialAccess: HostCredentialAccess = .keychain
     ) {
         self.defaults = userDefaults
         self.sessionStore = SessionStore(defaults: userDefaults)
@@ -211,6 +214,7 @@ final class AppState {
         self.deepLinkSessionResolver = deepLinkSessionResolver
         self.deepLinkHydratesSelection = deepLinkHydratesSelection
         self.clientCapabilityStore = clientCapabilityStore
+        self.hostCredentialAccess = hostCredentialAccess
         self.clientCapabilityURLOpener = clientCapabilityURLOpener ?? { url in
             #if os(iOS)
             return await UIApplication.shared.open(url)
@@ -229,8 +233,16 @@ final class AppState {
             _serverURL = APIClient.defaultServer
         }
         _username = defaults.string(forKey: Self.usernameKey) ?? ""
-        _password = (try? KeychainHelper.load(forKey: Self.passwordKeychainKey)) ?? ""
-        loadHostProfilesFromStorageOrLegacy()
+        let legacyPasswordLoadFailed: Bool
+        do {
+            _password = try hostCredentialAccess.load(Self.passwordKeychainKey) ?? ""
+            legacyPasswordLoadFailed = false
+        } catch {
+            _password = ""
+            legacyPasswordLoadFailed = true
+            hostCredentialError = error.localizedDescription
+        }
+        loadHostProfilesFromStorageOrLegacy(allowLegacyPersist: !legacyPasswordLoadFailed)
         applyCurrentHostProfileToRuntime(persistLegacy: false)
 
         _aiBuilderBaseURL = defaults.string(forKey: Self.aiBuilderBaseURLKey) ?? "https://space.ai-builders.com/backend"
@@ -259,15 +271,7 @@ final class AppState {
             }
         }
 
-        if let data = defaults.data(forKey: Self.draftInputsBySessionKey),
-           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
-            draftInputsBySessionID = decoded
-        }
-
-        if let data = defaults.data(forKey: Self.selectedModelBySessionKey),
-           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
-            selectedModelIDBySessionID = decoded
-        }
+        loadHostScopedPreferences()
 
         if let data = defaults.data(forKey: Self.carSessionsByContextKey),
            let decoded = try? JSONDecoder().decode([String: CarSessionRecord].self, from: data) {
@@ -281,15 +285,24 @@ final class AppState {
     }
 
     var sessionScope = SessionScopedState()
+    var hostRequestGeneration: UInt64 = 0
+    var draftInputsByHost: [String: [String: String]] = [:]
+    var selectedModelIDsByHost: [String: [String: String]] = [:]
+    var hostProfileBlobUnreadable = false
+    var hostProfileLoadError: String?
+    var hostCredentialError: String?
+    var hostPasswordUnreadable = false
+    var hostCredentialAccess = HostCredentialAccess.keychain
+    var hostTransportConfigureTask: Task<Void, Never>?
 
     var draftInputsBySessionID: [String: String] {
-        get { sessionScope.draftInputs }
-        set { sessionScope.draftInputs = newValue }
+        get { draftInputsByHost[currentHostProfileID.uuidString] ?? [:] }
+        set { draftInputsByHost[currentHostProfileID.uuidString] = newValue.isEmpty ? nil : newValue }
     }
 
     var selectedModelIDBySessionID: [String: String] {
-        get { sessionScope.selectedModelIDs }
-        set { sessionScope.selectedModelIDs = newValue }
+        get { selectedModelIDsByHost[currentHostProfileID.uuidString] ?? [:] }
+        set { selectedModelIDsByHost[currentHostProfileID.uuidString] = newValue.isEmpty ? nil : newValue }
     }
 
     var hostProfiles: [HostProfile] = [] {
@@ -297,7 +310,10 @@ final class AppState {
     }
 
     var currentHostProfileID: UUID = UUID() {
-        didSet { defaults.set(currentHostProfileID.uuidString, forKey: Self.currentHostProfileIDKey) }
+        didSet {
+            guard !hostProfileBlobUnreadable else { return }
+            defaults.set(currentHostProfileID.uuidString, forKey: Self.currentHostProfileIDKey)
+        }
     }
 
     var currentHostProfile: HostProfile? {
@@ -847,6 +863,12 @@ final class AppState {
         hasMoreSessions && !isLoadingMoreSessions
     }
 
+    func resetSessionPagination() {
+        isLoadingMoreSessions = false
+        loadedSessionLimit = Self.sessionPageSize
+        hasMoreSessions = true
+    }
+
     // WAN optimization: page message history in fixed-size message batches.
     nonisolated private static let messagePageSize = 20
     var loadedMessageLimitBySessionID: [String: Int] {
@@ -1086,11 +1108,10 @@ final class AppState {
     }
 
     func loadProvidersConfig() async {
-        // Diagnostics: build stamp + registry summary. One line per launch,
-        // enough to identify which binary is running and what the server
-        // returned, without dumping the whole payload.
+        let snapshot = captureHostRequestSnapshot()
         do {
             let resp = try await apiClient.providers()
+            guard isCurrentHostRequest(snapshot) else { return }
             providersResponse = resp
             providerConfigError = nil
             var idx: [String: ProviderModel] = [:]
@@ -1102,13 +1123,13 @@ final class AppState {
             }
             providerModelsIndex = idx
         } catch {
+            guard isCurrentHostRequest(snapshot) else { return }
             providerConfigError = error.localizedDescription
         }
 
-        // The dynamic picker prefers the /provider registry: it knows which
-        // providers are connected (incl. keyless local ones like Ollama),
-        // so the picker shows only models the user can actually run.
+        guard isCurrentHostRequest(snapshot) else { return }
         if let registry = try? await apiClient.providerRegistry() {
+            guard isCurrentHostRequest(snapshot) else { return }
             rebuildDynamicModelPresets(from: registry)
         } else if catalogModelPresets.isEmpty {
             Self.logger.warning("loadProvidersConfig: /provider registry unavailable, catalog unchanged")

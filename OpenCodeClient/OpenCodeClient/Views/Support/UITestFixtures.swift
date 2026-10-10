@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
@@ -21,6 +22,7 @@ enum UITestFixtures {
             || hasUITestClientCapabilityFixture
             || hasUITestDeepLinkFixture
             || hasUITestModelShortlistFixture
+            || hasHostEditorCredentialFixture
             || SessionScrollFixture.isActive
     }
 
@@ -62,6 +64,15 @@ enum UITestFixtures {
 
     static var hasUITestHostProfilesFixture: Bool {
         ProcessInfo.processInfo.arguments.contains("UITEST_HOST_PROFILES_FIXTURE")
+    }
+
+    static var hasHostEditorCredentialFixture: Bool {
+        ProcessInfo.processInfo.arguments.contains("UITEST_HOST_EDITOR_CREDENTIAL_FIXTURE")
+    }
+
+    static var hasHostEditorRebuildFixture: Bool {
+        hasHostEditorCredentialFixture
+            && ProcessInfo.processInfo.arguments.contains("UITEST_HOST_EDITOR_REBUILD")
     }
 
     static var hasUITestQuotaFixture: Bool {
@@ -129,6 +140,17 @@ enum UITestFixtures {
         if SessionScrollFixture.isActive {
             let state = SessionScrollFixture.makeAppState()
             SessionScrollFixture.apply(to: state)
+            return state
+        }
+
+        if hasHostEditorCredentialFixture {
+            L10n.languagePreference = .en
+            let defaults = UserDefaults(suiteName: "opencode.uitest.host-editor.\(UUID().uuidString)")!
+            let state = AppState(
+                userDefaults: defaults,
+                hostCredentialAccess: HostEditorCredentialFixture.access()
+            )
+            applyHostEditorCredentialFixture(to: state)
             return state
         }
 
@@ -470,6 +492,22 @@ enum UITestFixtures {
         state.rebuildPickerModelItems(reason: "fixture")
     }
 
+    static func applyHostEditorCredentialFixture(to state: AppState) {
+        let local = HostProfile(
+            id: UUID(uuidString: "00000000-0000-4000-8000-0000000000E4")!,
+            name: "Local OpenCode",
+            transport: .direct,
+            serverURL: "http://127.0.0.1:9",
+            basicAuth: nil,
+            ssh: nil,
+            lastUsedAt: nil
+        )
+        state.hostProfiles = [local]
+        state.currentHostProfileID = local.id
+        state.sshTunnelManager.disconnect()
+        state.selectedTab = RootTab.settings.rawValue
+    }
+
     static func applyHostProfilesFixture(to state: AppState) {
         let local = HostProfile(
             name: "Local OpenCode",
@@ -772,5 +810,58 @@ enum UITestFixtures {
     static func decodePart(_ obj: [String: Any]) -> Part {
         let data = try! JSONSerialization.data(withJSONObject: obj)
         return try! JSONDecoder().decode(Part.self, from: data)
+    }
+}
+
+@MainActor
+@Observable
+final class HostCredentialRecord {
+    var committed = "uncommitted"
+    private var saved: [String: String] = [:]
+
+    func store(_ value: String, key: String) {
+        var next = saved
+        next[key] = value
+        saved = next
+        committed = value
+    }
+
+    func remove(_ key: String) {
+        var next = saved
+        next.removeValue(forKey: key)
+        saved = next
+        committed = next.values.first ?? "uncommitted"
+    }
+
+    func lookup(_ key: String) -> String? {
+        saved[key]
+    }
+}
+
+@MainActor
+enum HostEditorCredentialFixture {
+    static let record = HostCredentialRecord()
+
+    static func access() -> HostCredentialAccess {
+        HostCredentialAccess(
+            save: { value, key in
+                if ProcessInfo.processInfo.arguments.contains("UITEST_HOST_EDITOR_SAVE_FAIL") {
+                    throw KeychainError.unhandledStatus(errSecInteractionNotAllowed)
+                }
+                MainActor.assumeIsolated {
+                    record.store(value, key: key)
+                }
+            },
+            load: { key in
+                MainActor.assumeIsolated {
+                    record.lookup(key)
+                }
+            },
+            delete: { key in
+                MainActor.assumeIsolated {
+                    record.remove(key)
+                }
+            }
+        )
     }
 }

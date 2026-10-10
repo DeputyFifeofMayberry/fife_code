@@ -174,6 +174,46 @@ struct SSHTunnelConfig: Codable, Equatable {
     static let `default` = SSHTunnelConfig()
 }
 
+struct SSHOpenedTunnel {
+    var id = UUID()
+    var remotePort: Int
+    var close: @MainActor () -> Void
+}
+
+nonisolated final class ListenerWait: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var resumed = false
+
+    init(_ continuation: CheckedContinuation<Void, Error>) {
+        self.continuation = continuation
+    }
+
+    @discardableResult
+    func resume() -> Bool {
+        finish(nil)
+    }
+
+    @discardableResult
+    func resume(throwing error: Error) -> Bool {
+        finish(error)
+    }
+
+    private func finish(_ error: Error?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !resumed, let continuation else { return false }
+        resumed = true
+        self.continuation = nil
+        if let error {
+            continuation.resume(throwing: error)
+        } else {
+            continuation.resume()
+        }
+        return true
+    }
+}
+
 #if os(visionOS)
 @MainActor
 final class SSHTunnelManager: ObservableObject {
@@ -238,6 +278,12 @@ final class SSHTunnelManager: ObservableObject {
     }
 }
 #else
+struct ListenerAttempt: Equatable, Sendable {
+    var id: UUID
+    var generation: UInt64
+    var remotePort: Int
+}
+
 @MainActor
 final class SSHTunnelManager: ObservableObject {
     @Published private(set) var status: SSHConnectionStatus = .disconnected
@@ -252,8 +298,17 @@ final class SSHTunnelManager: ObservableObject {
     
     private var sshClient: SSHClient?
     private var listener: NWListener?
-    private var tunnelTask: Task<Void, Never>?
+    private var connectTask: Task<Void, Never>?
+    private var connectGeneration: UInt64 = 0
+    private var listenerWait: ListenerWait?
+    private var listenerAttempt: ListenerAttempt?
+    private var connectedRemotePort: Int?
+    private var activeTunnel: SSHOpenedTunnel?
+    var tunnelConnector: (@MainActor (SSHTunnelConfig) async throws -> SSHOpenedTunnel)?
+    var listenerReadyHook: (@MainActor () async throws -> Void)?
     private let localPort: NWEndpoint.Port = 4096
+
+    var connectedRemotePortForTesting: Int? { connectedRemotePort }
     
     init() {
         if let data = UserDefaults.standard.data(forKey: "sshTunnelConfig"),
@@ -279,84 +334,180 @@ final class SSHTunnelManager: ObservableObject {
         return "ssh -N -T -R 127.0.0.1:\(config.remotePort):127.0.0.1:4096\(portArg) \(username)@\(host)"
     }
     
+    nonisolated static func listenerWaitShouldResume(_ state: NWListener.State) -> Bool {
+        switch state {
+        case .ready, .failed, .cancelled:
+            return true
+        default:
+            return false
+        }
+    }
+
     func connect() async {
         if let err = config.validationError {
             status = .error(err)
             return
         }
 
-        do {
-            _ = try SSHKeyManager.ensureKeyPair()
-        } catch {
-            disconnect()
-            status = .error(error.localizedDescription)
-            return
-        }
-
-        let privateKeyData: Data
-        do {
-            guard let data = try SSHKeyManager.loadPrivateKey() else {
-                throw SSHError.keyNotFound
-            }
-            privateKeyData = data
-        } catch {
-            disconnect()
-            status = .error(error.localizedDescription)
-            return
-        }
-        
+        let snapshot = config
+        invalidateInFlightConnect(updateStatus: false)
+        let generation = connectGeneration
         status = .connecting
         pendingHostKeyMismatch = nil
-        
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performConnect(generation: generation, snapshot: snapshot)
+        }
+        connectTask = task
+        await task.value
+        if connectTask == task {
+            connectTask = nil
+        }
+    }
+
+    func suspendListenerWaitForTesting(onInstalled: @MainActor () -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            listenerWait = ListenerWait(continuation)
+            onInstalled()
+        }
+    }
+
+    private func performConnect(generation: UInt64, snapshot: SSHTunnelConfig) async {
         do {
-            try await establishTunnel(privateKeyData: privateKeyData)
+            if let tunnelConnector {
+                let opened = try await tunnelConnector(snapshot)
+                guard adopt(opened, generation: generation) else { return }
+                if let listenerReadyHook {
+                    try await listenerReadyHook()
+                }
+                guard generation == connectGeneration, !Task.isCancelled else {
+                    closeIfStillActive(opened)
+                    return
+                }
+                connectedRemotePort = snapshot.remotePort
+                status = .connected
+                return
+            }
+            try await establishTunnel(generation: generation, snapshot: snapshot)
+            guard generation == connectGeneration, !Task.isCancelled else { return }
+            connectedRemotePort = snapshot.remotePort
             status = .connected
         } catch {
+            guard generation == connectGeneration, !Task.isCancelled else { return }
             if case let SSHError.hostKeyMismatch(expected, got, presentedOpenSSHKey) = error {
                 pendingHostKeyMismatch = SSHHostKeyMismatch(
-                    host: config.host,
-                    port: config.port,
+                    host: snapshot.host,
+                    port: snapshot.port,
                     expectedFingerprint: expected,
                     presentedFingerprint: got,
                     presentedOpenSSHKey: presentedOpenSSHKey
                 )
             }
-            disconnect()
+            invalidateInFlightConnect(updateStatus: false)
             status = .error(error.localizedDescription)
         }
     }
-    
-    private func establishTunnel(privateKeyData: Data) async throws {
-        #if DEBUG
-        print("[SSH] Connecting to \(config.host):\(config.port) as \(config.username)")
-        print("[SSH] Remote port: \(config.remotePort)")
-        #endif
-        
+
+    private func adopt(_ opened: SSHOpenedTunnel, generation: UInt64) -> Bool {
+        guard generation == connectGeneration, !Task.isCancelled else {
+            opened.close()
+            return false
+        }
+        activeTunnel = opened
+        return true
+    }
+
+    private func closeIfStillActive(_ opened: SSHOpenedTunnel) {
+        let current = activeTunnel
+        opened.close()
+        if current?.remotePort == opened.remotePort && current?.id == opened.id {
+            activeTunnel = nil
+            connectedRemotePort = nil
+        }
+    }
+
+    private func establishTunnel(generation: UInt64, snapshot: SSHTunnelConfig) async throws {
+        _ = try SSHKeyManager.ensureKeyPair()
+        guard let privateKeyData = try SSHKeyManager.loadPrivateKey() else {
+            throw SSHError.keyNotFound
+        }
         guard let privateKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: privateKeyData) else {
             throw SSHError.invalidKeyFormat
         }
-        
-        let username = config.username
         let settings = SSHClientSettings(
-            host: config.host,
-            port: config.port,
-            authenticationMethod: { .ed25519(username: username, privateKey: privateKey) },
-            hostKeyValidator: .custom(SSHTOFUHostKeyValidator(host: config.host, port: config.port))
+            host: snapshot.host,
+            port: snapshot.port,
+            authenticationMethod: { .ed25519(username: snapshot.username, privateKey: privateKey) },
+            hostKeyValidator: .custom(SSHTOFUHostKeyValidator(host: snapshot.host, port: snapshot.port))
         )
-        
         let client = try await SSHClient.connect(to: settings)
-        self.sshClient = client
-        self.trustedHostFingerprint = SSHKnownHostStore.fingerprint(host: config.host, port: config.port)
-        self.pendingHostKeyMismatch = nil
-        
-        #if DEBUG
-        print("[SSH] Connected successfully")
-        #endif
-        
-        try await startLocalListener(sshClient: client)
+        guard generation == connectGeneration, !Task.isCancelled else {
+            Task { try? await client.close() }
+            throw CancellationError()
+        }
+        sshClient = client
+        trustedHostFingerprint = SSHKnownHostStore.fingerprint(host: snapshot.host, port: snapshot.port)
+        pendingHostKeyMismatch = nil
+        do {
+            try await startLocalListener(sshClient: client, generation: generation, remotePort: snapshot.remotePort)
+        } catch {
+            if generation != connectGeneration || Task.isCancelled {
+                Task { try? await client.close() }
+                throw CancellationError()
+            }
+            throw error
+        }
+        guard generation == connectGeneration, !Task.isCancelled else {
+            Task { try? await client.close() }
+            throw CancellationError()
+        }
     }
 
-    private func startLocalListener(sshClient: SSHClient) async throws {
+    @discardableResult
+    func beginListenerAttempt(remotePort: Int) -> ListenerAttempt {
+        let attempt = ListenerAttempt(id: UUID(), generation: connectGeneration, remotePort: remotePort)
+        listenerAttempt = attempt
+        return attempt
+    }
+
+    func isCurrentListenerAttempt(generation: UInt64, attemptID: UUID) -> Bool {
+        generation == connectGeneration && listenerAttempt?.id == attemptID
+    }
+
+    func deliverDeferredListenerFailure(generation: UInt64, attemptID: UUID, message: String) {
+        guard isCurrentListenerAttempt(generation: generation, attemptID: attemptID) else { return }
+        status = .error(message)
+        invalidateInFlightConnect(updateStatus: false)
+    }
+
+    func acceptLocalForward<T>(
+        generation: UInt64,
+        attemptID: UUID,
+        remotePort: Int,
+        openChannel: (Int) async throws -> T,
+        cancelConnection: () -> Void,
+        startForward: (T) -> Void,
+        abandonForward: (T) -> Void
+    ) async {
+        guard isCurrentListenerAttempt(generation: generation, attemptID: attemptID) else {
+            cancelConnection()
+            return
+        }
+        do {
+            let opened = try await openChannel(remotePort)
+            guard isCurrentListenerAttempt(generation: generation, attemptID: attemptID) else {
+                cancelConnection()
+                abandonForward(opened)
+                return
+            }
+            startForward(opened)
+        } catch {
+            cancelConnection()
+            recordForwardErrorIfCurrent(generation, attemptID, error.localizedDescription)
+        }
+    }
+
+    private func startLocalListener(sshClient: SSHClient, generation: UInt64, remotePort: Int) async throws {
         if let listener {
             listener.cancel()
             self.listener = nil
@@ -368,34 +519,46 @@ final class SSHTunnelManager: ObservableObject {
 
         let listener = try NWListener(using: params, on: localPort)
         self.listener = listener
+        let attempt = beginListenerAttempt(remotePort: remotePort)
+        let installedListener = listener
+        let localPortNumber = Int(localPort.rawValue)
 
         let queue = DispatchQueue(label: "com.opencode.ssh.tunnel.listener")
         listener.newConnectionHandler = { [weak self] conn in
-            guard let self else { return }
             Task { @MainActor in
-                self.handleLocalConnection(conn, sshClient: sshClient)
+                guard let self else {
+                    conn.cancel()
+                    return
+                }
+                await self.handleLocalConnection(
+                    conn,
+                    sshClient: sshClient,
+                    generation: generation,
+                    attemptID: attempt.id,
+                    remotePort: attempt.remotePort,
+                    localPort: localPortNumber
+                )
             }
         }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var didResume = false
+            let wait = ListenerWait(continuation)
+            self.listenerWait = wait
             listener.stateUpdateHandler = { [weak self] newState in
-                guard let self else { return }
+                guard Self.listenerWaitShouldResume(newState) else { return }
                 switch newState {
                 case .ready:
-                    if !didResume {
-                        didResume = true
-                        continuation.resume()
-                    }
+                    _ = wait.resume()
+                case .cancelled:
+                    _ = wait.resume(throwing: CancellationError())
                 case .failed(let err):
-                    if !didResume {
-                        didResume = true
-                        continuation.resume(throwing: SSHError.tunnelFailed(L10n.t(.hostDiagnosticLocalListenerFailed, err.localizedDescription)))
-                    } else {
-                        Task { @MainActor in
-                            self.status = .error(L10n.t(.sshErrorTunnelFailed, L10n.t(.hostDiagnosticLocalListenerFailed, err.localizedDescription)))
-                            self.disconnect(updateStatus: false)
-                        }
+                    let detail = err.localizedDescription
+                    Task { @MainActor in
+                        let listenerDetail = L10n.t(.hostDiagnosticLocalListenerFailed, detail)
+                        let message = L10n.t(.sshErrorTunnelFailed, listenerDetail)
+                        let first = wait.resume(throwing: SSHError.tunnelFailed(listenerDetail))
+                        guard !first, let self, self.listener === installedListener else { return }
+                        self.deliverDeferredListenerFailure(generation: generation, attemptID: attempt.id, message: message)
                     }
                 default:
                     break
@@ -405,7 +568,14 @@ final class SSHTunnelManager: ObservableObject {
         }
     }
 
-    nonisolated private func handleLocalConnection(_ conn: NWConnection, sshClient: SSHClient) {
+    private func handleLocalConnection(
+        _ conn: NWConnection,
+        sshClient: SSHClient,
+        generation: UInt64,
+        attemptID: UUID,
+        remotePort: Int,
+        localPort: Int
+    ) async {
         let queue = DispatchQueue(label: "com.opencode.ssh.tunnel.conn")
         conn.stateUpdateHandler = { state in
             switch state {
@@ -417,28 +587,30 @@ final class SSHTunnelManager: ObservableObject {
         }
         conn.start(queue: queue)
 
-        Task { [weak self] in
-            let snapshot = await self?.connectionSnapshot() ?? (localPort: 4096, remotePort: 19001)
-
-            do {
-                let originator = try SocketAddress(ipAddress: "127.0.0.1", port: snapshot.localPort)
-
-                let channel = try await sshClient.createDirectTCPIPChannel(
+        await acceptLocalForward(
+            generation: generation,
+            attemptID: attemptID,
+            remotePort: remotePort,
+            openChannel: { capturedPort in
+                let originator = try SocketAddress(ipAddress: "127.0.0.1", port: localPort)
+                return try await sshClient.createDirectTCPIPChannel(
                     using: SSHChannelType.DirectTCPIP(
                         targetHost: "127.0.0.1",
-                        targetPort: snapshot.remotePort,
+                        targetPort: capturedPort,
                         originatorAddress: originator
                     )
                 ) { channel in
                     channel.pipeline.addHandler(NIOToNWConnectionHandler(nwConnection: conn))
                 }
-
+            },
+            cancelConnection: { conn.cancel() },
+            startForward: { channel in
                 Self.startReceiveLoop(from: conn, to: channel)
-            } catch {
-                conn.cancel()
-                await self?.setErrorIfStillConnected(error.localizedDescription)
+            },
+            abandonForward: { channel in
+                channel.close(promise: nil)
             }
-        }
+        )
     }
 
     nonisolated private static func startReceiveLoop(from conn: NWConnection, to channel: Channel) {
@@ -464,19 +636,27 @@ final class SSHTunnelManager: ObservableObject {
     }
     
     func disconnect(updateStatus: Bool = true) {
-        tunnelTask?.cancel()
-        tunnelTask = nil
+        invalidateInFlightConnect(updateStatus: updateStatus)
+    }
 
+    private func invalidateInFlightConnect(updateStatus: Bool) {
+        connectGeneration &+= 1
+        connectTask?.cancel()
+        connectTask = nil
+        listenerWait?.resume(throwing: CancellationError())
+        listenerWait = nil
         listener?.cancel()
         listener = nil
-        
+        activeTunnel?.close()
+        activeTunnel = nil
+        listenerAttempt = nil
+        connectedRemotePort = nil
         if let client = sshClient {
             Task {
                 try? await client.close()
             }
         }
         sshClient = nil
-
         if updateStatus {
             status = .disconnected
         }
@@ -507,14 +687,9 @@ final class SSHTunnelManager: ObservableObject {
         pendingHostKeyMismatch = nil
     }
 
-    private func connectionSnapshot() -> (localPort: Int, remotePort: Int) {
-        (Int(localPort.rawValue), config.remotePort)
-    }
-
-    private func setErrorIfStillConnected(_ description: String) {
-        if status == .connected {
-            status = .error(description)
-        }
+    private func recordForwardErrorIfCurrent(_ generation: UInt64, _ attemptID: UUID, _ description: String) {
+        guard isCurrentListenerAttempt(generation: generation, attemptID: attemptID), status == .connected else { return }
+        status = .error(description)
     }
 }
 

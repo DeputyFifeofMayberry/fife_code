@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 
 struct CurrentHostSummaryView: View {
@@ -123,8 +124,25 @@ struct HostProfilesView: View {
             #endif
         }
         .navigationTitle(L10n.t(.hostHosts))
+        .onAppear {
+            guard UITestFixtures.hasHostEditorCredentialFixture, editorMode == nil else { return }
+            guard let profile = state.currentHostProfile ?? state.hostProfiles.first else { return }
+            editorMode = .edit(profile)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if UITestFixtures.hasHostEditorCredentialFixture {
+                HostCredentialRecordSentinel()
+                    .padding(.trailing, 12)
+                    .padding(.bottom, 8)
+                    .allowsHitTesting(false)
+            }
+        }
         .sheet(item: $editorMode) { mode in
-            HostProfileEditorView(state: state, mode: mode)
+            if UITestFixtures.hasHostEditorCredentialFixture {
+                HostEditorParentRebuildProbe(state: state, mode: mode)
+            } else {
+                HostProfileEditorView(state: state, mode: mode)
+            }
         }
         .alert(L10n.t(.hostErrorTitle), isPresented: Binding(
             get: { errorMessage != nil },
@@ -194,6 +212,27 @@ struct HostProfilesView: View {
     }
 }
 
+struct HostCardStatus: Equatable {
+    var diagnostic: ConnectionDiagnostic?
+    var storageError: String?
+    var connectionError: String?
+}
+
+func hostCardStatus(
+    profileID: UUID,
+    diagnostic: ConnectionDiagnostic?,
+    loadError: String?,
+    credentialError: String?,
+    connectionError: String?
+) -> HostCardStatus {
+    let matching = diagnostic?.hostProfileID == profileID ? diagnostic : nil
+    return HostCardStatus(
+        diagnostic: matching,
+        storageError: loadError ?? credentialError,
+        connectionError: matching == nil ? connectionError : nil
+    )
+}
+
 private struct CurrentHostCard: View {
     @Bindable var state: AppState
     let profile: HostProfile
@@ -225,10 +264,23 @@ private struct CurrentHostCard: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-            if let diagnostic = state.connectionDiagnostic, diagnostic.hostProfileID == profile.id {
+            let status = hostCardStatus(
+                profileID: profile.id,
+                diagnostic: state.connectionDiagnostic,
+                loadError: state.hostProfileLoadError,
+                credentialError: state.hostCredentialError,
+                connectionError: state.connectionError
+            )
+            if let diagnostic = status.diagnostic {
                 DiagnosticSummaryView(diagnostic: diagnostic)
-            } else if let error = state.connectionError {
-                Text(error)
+            }
+            if let storageError = status.storageError {
+                Text(storageError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if let connectionError = status.connectionError {
+                Text(connectionError)
                     .font(.caption)
                     .foregroundStyle(.red)
             }
@@ -325,6 +377,9 @@ private struct HostProfileDetailView: View {
 
     var body: some View {
         Form {
+            if UITestFixtures.hasHostEditorCredentialFixture {
+                HostCredentialRecordSentinel()
+            }
             if let profile {
                 Section(L10n.t(.hostOverview)) {
                     LabeledContent(L10n.t(.hostName), value: profile.displayName)
@@ -457,15 +512,28 @@ enum HostProfileEditorMode: Identifiable {
     }
 }
 
+@Observable
+final class HostEditorCredentialDraft {
+    var password: String
+    var passwordDirty = false
+    var passwordLoadFailed: Bool
+    var errorMessage: String?
+
+    init(password: String, loadFailed: Bool, errorMessage: String?) {
+        self.password = password
+        self.passwordLoadFailed = loadFailed
+        self.errorMessage = errorMessage
+    }
+}
+
 struct HostProfileEditorView: View {
     @Bindable var state: AppState
     let mode: HostProfileEditorMode
     @Environment(\.dismiss) private var dismiss
 
     @State private var profile: HostProfile
-    @State private var password: String
+    @State var credentialDraft: HostEditorCredentialDraft
     @State private var importText = ""
-    @State private var errorMessage: String?
     @State private var publicKeyCopied = false
 
     init(state: AppState, mode: HostProfileEditorMode) {
@@ -478,8 +546,27 @@ struct HostProfileEditorView: View {
         case .edit(let profile):
             initial = profile
         }
+        let loadedPassword: String
+        let loadError: String?
+        if let auth = initial.basicAuth {
+            do {
+                loadedPassword = try state.hostCredentialAccess.load(auth.keychainPasswordID) ?? ""
+                loadError = nil
+            } catch {
+                loadedPassword = ""
+                loadError = error.localizedDescription
+                state.hostCredentialError = error.localizedDescription
+            }
+        } else {
+            loadedPassword = ""
+            loadError = nil
+        }
         _profile = State(initialValue: initial)
-        _password = State(initialValue: initial.basicAuth.flatMap { try? KeychainHelper.load(forKey: $0.keychainPasswordID) } ?? "")
+        _credentialDraft = State(initialValue: HostEditorCredentialDraft(
+            password: loadedPassword,
+            loadFailed: loadError != nil,
+            errorMessage: loadError
+        ))
         _importText = State(initialValue: Self.uiTestImportJSON)
     }
 
@@ -497,7 +584,7 @@ struct HostProfileEditorView: View {
                                 profile = try state.importHostProfile(from: importText)
                                 importText = ""
                             } catch {
-                                errorMessage = error.localizedDescription
+                                credentialDraft.errorMessage = error.localizedDescription
                             }
                         } label: {
                             Label(L10n.t(.hostImportConfig), systemImage: "square.and.arrow.down")
@@ -530,7 +617,7 @@ struct HostProfileEditorView: View {
                 }
 
                 Section(L10n.t(.hostTitle)) {
-                    TextField(L10n.t(.hostName), text: $profile.name)
+                    TextField(L10n.t(.hostName), text: nameBinding)
                         .accessibilityIdentifier("host-name")
                     if profile.transport == .direct {
                         TextField(L10n.t(.hostOpenCodeURL), text: $profile.serverURL)
@@ -582,14 +669,17 @@ struct HostProfileEditorView: View {
                     TextField(L10n.t(.settingsUsername), text: basicAuthUsernameBinding)
                         .textContentType(.username)
                         .textInputAutocapitalization(.never)
-                    SecureField(L10n.t(.settingsPassword), text: $password)
+                    SecureField(L10n.t(.settingsPassword), text: passwordBinding)
                         .textContentType(.password)
+                        .accessibilityIdentifier("host-password")
+                        .modifier(HostEditorPasswordProbe(password: credentialDraft.password))
                 }
 
                 Section {
                     Button(L10n.t(.settingsTestConnection)) {
-                        save(makeCurrent: true)
-                        Task { await state.refresh() }
+                        if save(makeCurrent: true) {
+                            Task { await state.refresh() }
+                        }
                     }
                     .disabled(!canSave)
                     Text(L10n.t(.hostSaveHelp))
@@ -605,20 +695,21 @@ struct HostProfileEditorView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(L10n.t(.hostSave)) {
-                        save(makeCurrent: true)
-                        dismiss()
+                        if save(makeCurrent: true) {
+                            dismiss()
+                        }
                     }
                     .disabled(!canSave)
                     .accessibilityIdentifier("host-save")
                 }
             }
             .alert(L10n.t(.hostErrorTitle), isPresented: Binding(
-                get: { errorMessage != nil },
-                set: { if !$0 { errorMessage = nil } }
+                get: { credentialDraft.errorMessage != nil },
+                set: { if !$0 { credentialDraft.errorMessage = nil } }
             )) {
                 Button(L10n.t(.commonOk), role: .cancel) {}
             } message: {
-                Text(errorMessage ?? "")
+                Text(credentialDraft.errorMessage ?? "")
             }
         }
     }
@@ -647,13 +738,35 @@ struct HostProfileEditorView: View {
         Binding {
             profile.basicAuth?.username ?? ""
         } set: { newValue in
-            if newValue.isEmpty && password.isEmpty {
+            if newValue.isEmpty && credentialDraft.password.isEmpty && !credentialDraft.passwordLoadFailed {
                 profile.basicAuth = nil
             } else {
                 let passwordID = profile.basicAuth?.keychainPasswordID ?? AppState.passwordKeychainID(for: profile.id)
                 profile.basicAuth = BasicAuthConfig(username: newValue, keychainPasswordID: passwordID)
             }
         }
+    }
+
+    private var nameBinding: Binding<String> {
+        Binding(get: { profile.name }, set: { editName($0) })
+    }
+
+    private var passwordBinding: Binding<String> {
+        Binding(get: { credentialDraft.password }, set: { editPassword($0) })
+    }
+
+    var errorMessage: String? { credentialDraft.errorMessage }
+
+    var passwordDirty: Bool { credentialDraft.passwordDirty }
+    var passwordLoadFailed: Bool { credentialDraft.passwordLoadFailed }
+
+    func editName(_ name: String) {
+        profile.name = name
+    }
+
+    func editPassword(_ value: String) {
+        credentialDraft.password = value
+        credentialDraft.passwordDirty = true
     }
 
     private var sshHostBinding: Binding<String> {
@@ -690,7 +803,8 @@ struct HostProfileEditorView: View {
         }
     }
 
-    private func save(makeCurrent: Bool) {
+    @discardableResult
+    func save(makeCurrent: Bool) -> Bool {
         var toSave = profile
         if toSave.transport == .sshTunnel {
             var ssh = toSave.ssh ?? .default
@@ -698,7 +812,14 @@ struct HostProfileEditorView: View {
             toSave.ssh = ssh
             toSave.serverURL = APIClient.defaultServer
         }
-        state.saveHostProfile(toSave, password: password, makeCurrent: makeCurrent)
+        let passwordArgument: String? = credentialDraft.passwordDirty ? credentialDraft.password : nil
+        do {
+            try state.saveHostProfile(toSave, password: passwordArgument, makeCurrent: makeCurrent)
+            return true
+        } catch {
+            credentialDraft.errorMessage = error.localizedDescription
+            return false
+        }
     }
 
     private func copyPublicKey() {
@@ -709,9 +830,57 @@ struct HostProfileEditorView: View {
             publicKeyCopied = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { publicKeyCopied = false }
         } catch {
-            errorMessage = error.localizedDescription
+            credentialDraft.errorMessage = error.localizedDescription
         }
         #endif
+    }
+}
+
+private struct HostCredentialRecordSentinel: View {
+    var body: some View {
+        let value = HostEditorCredentialFixture.record.committed
+        Text(value)
+            .font(.caption2)
+            .accessibilityIdentifier("host-credential-record")
+            .accessibilityValue(value)
+    }
+}
+
+private struct HostEditorPasswordProbe: ViewModifier {
+    let password: String
+
+    func body(content: Content) -> some View {
+        if UITestFixtures.hasHostEditorCredentialFixture {
+            content.accessibilityValue(password)
+        } else {
+            content
+        }
+    }
+}
+
+private struct HostEditorParentRebuildProbe: View {
+    @Bindable var state: AppState
+    let mode: HostProfileEditorMode
+    @State private var generation = 0
+
+    var body: some View {
+        HostProfileEditorView(state: state, mode: mode)
+            .overlay(alignment: .topLeading) {
+                if UITestFixtures.hasHostEditorRebuildFixture {
+                    Button("Rebuild") { generation += 1 }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("editor-identity-rebuild")
+                        .accessibilityLabel("g\(generation)")
+                        .padding(.top, 64)
+                        .padding(.leading, 12)
+                }
+            }
+            .overlay(alignment: .bottomLeading) {
+                HostCredentialRecordSentinel()
+                    .padding(.leading, 12)
+                    .padding(.bottom, 8)
+                    .allowsHitTesting(false)
+            }
     }
 }
 
