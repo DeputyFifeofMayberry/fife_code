@@ -40,35 +40,44 @@ enum ActivityTracker {
             }
         }
 
-        if wasBusy, var completed = existing {
-            if hasRunningAssistantWork(sessionID: sessionID, messages: messages) {
-                completed.state = .running
-                completed.endedAt = nil
-                completed.anchorMessageID = nil
-                return completed
-            }
-
-            let completion = lastAssistantMessageCompletedAtOrAfter(
+        if wasBusy {
+            return reconcileRunningActivity(
                 sessionID: sessionID,
+                status: current,
+                existing: existing,
                 messages: messages,
-                threshold: completed.startedAt
+                currentSessionID: currentSessionID
             )
-            if completion == nil {
-                completed.state = .running
-                completed.endedAt = nil
-                completed.anchorMessageID = nil
-                return completed
-            }
-
-            completed.state = .completed
-            completed.endedAt = completion ?? now
-            if sessionID == currentSessionID {
-                completed.anchorMessageID = messages.last?.info.id
-            }
-            return completed
         }
 
         return existing
+    }
+
+    static func reconcileRunningActivity(
+        sessionID: String,
+        status: SessionStatus?,
+        existing: SessionActivity?,
+        messages: [MessageWithParts],
+        currentSessionID: String?
+    ) -> SessionActivity? {
+        guard var activity = existing, activity.state == .running else { return existing }
+        guard !isBusyStatus(status) else { return existing }
+        if hasRunningAssistantWork(sessionID: sessionID, messages: messages) {
+            return activity
+        }
+        guard let completion = lastAssistantMessageCompletedAtOrAfter(
+            sessionID: sessionID,
+            messages: messages,
+            threshold: activity.startedAt
+        ) else {
+            return activity
+        }
+        activity.state = .completed
+        activity.endedAt = completion
+        if sessionID == currentSessionID {
+            activity.anchorMessageID = messages.last?.info.id
+        }
+        return activity
     }
 
     static func bestSessionActivityText(
