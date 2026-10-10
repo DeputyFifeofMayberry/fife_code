@@ -11,8 +11,6 @@ struct SessionScopedStateTests {
         scope.loadedMessageLimit["s1"] = 40
         scope.hasMoreHistory["s1"] = true
         scope.loadingOlderMessages.insert("s1")
-        scope.draftInputs["s1"] = "draft"
-        scope.selectedModelIDs["s1"] = "google/gemini-3.5-flash"
         scope.pendingPermissions = [
             PendingPermission(
                 sessionID: "s1",
@@ -37,8 +35,6 @@ struct SessionScopedStateTests {
         #expect(scope.loadedMessageLimit["s1"] == nil)
         #expect(scope.hasMoreHistory["s1"] == nil)
         #expect(!scope.loadingOlderMessages.contains("s1"))
-        #expect(scope.draftInputs["s1"] == nil)
-        #expect(scope.selectedModelIDs["s1"] == nil)
         #expect(scope.pendingPermissions.isEmpty)
         #expect(scope.pendingQuestions.map(\.id) == ["q2"])
     }
@@ -48,16 +44,22 @@ struct SessionScopedStateTests {
         scope.activities["s1"] = SessionActivity(sessionID: "s1", state: .running, text: "x", startedAt: Date())
         scope.loadedMessageLimit["s1"] = 40
         scope.pendingQuestions = [QuestionRequest(id: "q1", sessionID: "s1", questions: [], tool: nil)]
-        scope.draftInputs["s1"] = "draft"
         scope.resetAll()
         #expect(scope.activities.isEmpty)
         #expect(scope.loadedMessageLimit.isEmpty)
         #expect(scope.pendingQuestions.isEmpty)
-        #expect(scope.draftInputs.isEmpty)
     }
 
-    @Test @MainActor func hostSwitchResetsPreviouslyLeakedSessionCaches() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+    @Test @MainActor func hostSwitchResetsRuntimeButKeepsHostPreferences() {
+        let previousSSHConfig = UserDefaults.standard.object(forKey: "sshTunnelConfig")
+        defer {
+            if let previousSSHConfig {
+                UserDefaults.standard.set(previousSSHConfig, forKey: "sshTunnelConfig")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "sshTunnelConfig")
+            }
+        }
+        let state = makeIsolatedAppState()
         state.sessionActivities["s1"] = SessionActivity(sessionID: "s1", state: .running, text: "x", startedAt: Date())
         state.loadedMessageLimitBySessionID["s1"] = 40
         state.hasMoreHistoryBySessionID["s1"] = true
@@ -72,8 +74,8 @@ struct SessionScopedStateTests {
         #expect(state.hasMoreHistoryBySessionID.isEmpty)
         #expect(state.pendingQuestions.isEmpty)
         #expect(state.pendingPermissions.isEmpty)
-        #expect(state.draftInputsBySessionID.isEmpty)
-        #expect(state.selectedModelIDBySessionID.isEmpty)
+        #expect(state.draftInputsBySessionID["s1"] == "draft")
+        #expect(state.selectedModelIDBySessionID["s1"] == "google/gemini-3.5-flash")
     }
 
     @Test @MainActor func clearSessionScopedCachesDropsQuestionsForThatSessionOnly() {

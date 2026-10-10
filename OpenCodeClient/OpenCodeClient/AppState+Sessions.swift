@@ -53,6 +53,7 @@ extension AppState {
     }
 
     func testConnection() async {
+        let snapshot = captureHostRequestSnapshot()
         connectionError = nil
         pendingSSHHostKeyMismatch = nil
         updateConnectionDiagnostic(phase: .health, message: L10n.t(.hostDiagnosticCheckingHealth))
@@ -67,6 +68,7 @@ extension AppState {
             if sshTunnelManager.status != .connected {
                 await sshTunnelManager.connect()
             }
+            guard isCurrentHostRequest(snapshot) else { return }
             if case .error(let message) = sshTunnelManager.status {
                 isConnected = false
                 connectionError = L10n.t(.hostDiagnosticSSHTunnelFailed, message)
@@ -98,9 +100,11 @@ extension AppState {
         }
 
         await apiClient.configure(baseURL: baseURL, username: username.isEmpty ? nil : username, password: password.isEmpty ? nil : password)
+        guard isCurrentHostRequest(snapshot) else { return }
         do {
             updateConnectionDiagnostic(phase: .health, message: L10n.t(.hostDiagnosticCheckingHealthURL, baseURL))
             let health = try await apiClient.health()
+            guard isCurrentHostRequest(snapshot) else { return }
             isConnected = health.healthy
             serverVersion = health.version
             if isConnected {
@@ -118,6 +122,7 @@ extension AppState {
                 )
             }
         } catch {
+            guard isCurrentHostRequest(snapshot) else { return }
             isConnected = false
             let message = friendlyConnectionError(error, phase: .health)
             connectionError = message
@@ -131,22 +136,31 @@ extension AppState {
 
     func loadProjects() async {
         guard isConnected else { return }
+        let snapshot = captureHostRequestSnapshot()
         isLoadingProjects = true
         do {
-            projects = try await apiClient.projects()
-            serverCurrentProjectWorktree = (try? await apiClient.projectCurrent())?.worktree
+            let loaded = try await apiClient.projects()
+            guard isCurrentHostRequest(snapshot) else { return }
+            projects = loaded
+            let current = try? await apiClient.projectCurrent()
+            guard isCurrentHostRequest(snapshot) else { return }
+            serverCurrentProjectWorktree = current?.worktree
         } catch {
+            guard isCurrentHostRequest(snapshot) else { return }
             Self.logger.warning("loadProjects failed: \(error.localizedDescription)")
             projects = []
         }
+        guard isCurrentHostRequest(snapshot) else { return }
         isLoadingProjects = false
     }
 
     func loadSessions() async {
         guard isConnected else { return }
+        let snapshot = captureHostRequestSnapshot()
         do {
             let selectedSession = currentSession
             let loaded = try await fetchSessions(limit: loadedSessionLimit)
+            guard isCurrentHostRequest(snapshot) else { return }
             applyFetchedSessionPage(loaded, capturedSelection: selectedSession)
             hasMoreSessions = loaded.count >= loadedSessionLimit
             selectFirstAvailableSessionIfNeeded()
@@ -164,6 +178,7 @@ extension AppState {
                 await refreshPendingPermissions()
             }
         } catch {
+            guard isCurrentHostRequest(snapshot) else { return }
             connectionError = error.localizedDescription
         }
     }
@@ -174,17 +189,24 @@ extension AppState {
         guard !isLoadingMoreSessions else { return }
 
         isLoadingMoreSessions = true
+        let snapshot = captureHostRequestSnapshot()
         let nextLimit = Self.nextSessionFetchLimit(current: loadedSessionLimit)
-        defer { isLoadingMoreSessions = false }
+        defer {
+            if isCurrentHostRequest(snapshot) {
+                isLoadingMoreSessions = false
+            }
+        }
 
         do {
             let selectedSession = currentSession
             let loaded = try await fetchSessions(limit: nextLimit)
+            guard isCurrentHostRequest(snapshot) else { return }
             loadedSessionLimit = nextLimit
             applyFetchedSessionPage(loaded, capturedSelection: selectedSession)
             hasMoreSessions = loaded.count >= loadedSessionLimit
             selectFirstAvailableSessionIfNeeded()
         } catch {
+            guard isCurrentHostRequest(snapshot) else { return }
             connectionError = error.localizedDescription
         }
     }
@@ -211,16 +233,20 @@ extension AppState {
 
     func loadAgents() async {
         guard isConnected else { return }
+        let snapshot = captureHostRequestSnapshot()
         isLoadingAgents = true
         do {
             let loaded = try await apiClient.agents()
+            guard isCurrentHostRequest(snapshot) else { return }
             let previous = selectedAgentName
             agents = loaded
             hasServerAgentCatalog = true
             reconcileSelectedAgent(preferredName: previous)
         } catch {
+            guard isCurrentHostRequest(snapshot) else { return }
             Self.logger.warning("loadAgents failed: \(error.localizedDescription)")
         }
+        guard isCurrentHostRequest(snapshot) else { return }
         isLoadingAgents = false
     }
 

@@ -8,8 +8,6 @@ struct SessionScopedState {
     var loadedMessageLimit: [String: Int] = [:]
     var hasMoreHistory: [String: Bool] = [:]
     var loadingOlderMessages: Set<String> = []
-    var draftInputs: [String: String] = [:]
-    var selectedModelIDs: [String: String] = [:]
     var pendingPermissions: [PendingPermission] = []
     var pendingQuestions: [QuestionRequest] = []
     var confirmedMissingSessionIDs: Set<String> = []
@@ -23,8 +21,6 @@ struct SessionScopedState {
         loadedMessageLimit[sessionID] = nil
         hasMoreHistory[sessionID] = nil
         loadingOlderMessages.remove(sessionID)
-        draftInputs[sessionID] = nil
-        selectedModelIDs[sessionID] = nil
         pendingPermissions.removeAll { $0.sessionID == sessionID }
         pendingQuestions.removeAll { $0.sessionID == sessionID }
     }
