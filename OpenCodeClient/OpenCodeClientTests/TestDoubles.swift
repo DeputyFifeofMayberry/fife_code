@@ -103,6 +103,18 @@ actor MockAPIClient: APIClientProtocol {
     var promptStructuredCalls: [(sessionID: String, messageID: String?, text: String, system: String, agent: String, providerID: String, modelID: String)] = []
     var promptStructuredResult: MessageWithParts?
     var promptStructuredDelayNanoseconds: UInt64 = 0
+    var createSessionCalls: [(title: String?, directory: String?)] = []
+    private var suspendCreateSession = false
+    private var createSessionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var createSessionObservers: [CheckedContinuation<Void, Never>] = []
+    private var suspendPromptStructured = false
+    private var promptStructuredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var promptStructuredObservers: [CheckedContinuation<Void, Never>] = []
+    var projectCurrentResult: Project?
+    var projectCurrentError: Error?
+    private var suspendProjectCurrent = false
+    private var projectCurrentWaiters: [CheckedContinuation<Void, Never>] = []
+    private var projectCurrentObservers: [CheckedContinuation<Void, Never>] = []
     var sessionResult: Session?
     var sessionError: Error?
     var sessionRequests: [String] = []
@@ -179,6 +191,71 @@ actor MockAPIClient: APIClientProtocol {
         promptStructuredDelayNanoseconds = value
     }
 
+    func setSuspendCreateSession(_ value: Bool) {
+        suspendCreateSession = value
+    }
+
+    func setSuspendPromptStructured(_ value: Bool) {
+        suspendPromptStructured = value
+    }
+
+    func waitUntilCreateSessionPending(_ count: Int) async {
+        while createSessionWaiters.count < count {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                createSessionObservers.append(cont)
+            }
+        }
+    }
+
+    func waitUntilPromptStructuredPending(_ count: Int) async {
+        while promptStructuredWaiters.count < count {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                promptStructuredObservers.append(cont)
+            }
+        }
+    }
+
+    func releaseCreateSession() {
+        suspendCreateSession = false
+        let pending = createSessionWaiters
+        createSessionWaiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
+
+    func releasePromptStructured() {
+        suspendPromptStructured = false
+        let pending = promptStructuredWaiters
+        promptStructuredWaiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
+
+    func setProjectCurrentResult(_ project: Project?) {
+        projectCurrentResult = project
+    }
+
+    func setProjectCurrentError(_ error: Error?) {
+        projectCurrentError = error
+    }
+
+    func setSuspendProjectCurrent(_ value: Bool) {
+        suspendProjectCurrent = value
+    }
+
+    func waitUntilProjectCurrentPending(_ count: Int) async {
+        while projectCurrentWaiters.count < count {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                projectCurrentObservers.append(cont)
+            }
+        }
+    }
+
+    func releaseProjectCurrent() {
+        suspendProjectCurrent = false
+        let pending = projectCurrentWaiters
+        projectCurrentWaiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
+
     func setSessionError(_ error: Error?) {
         sessionError = error
     }
@@ -211,7 +288,18 @@ actor MockAPIClient: APIClientProtocol {
     }
 
     func projects() async throws -> [Project] { [] }
-    func projectCurrent() async throws -> Project? { nil }
+    func projectCurrent() async throws -> Project? {
+        if suspendProjectCurrent {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                projectCurrentWaiters.append(cont)
+                let pending = projectCurrentObservers
+                projectCurrentObservers.removeAll()
+                pending.forEach { $0.resume() }
+            }
+        }
+        if let projectCurrentError { throw projectCurrentError }
+        return projectCurrentResult
+    }
     func sessions(directory: String?, limit: Int) async throws -> [Session] {
         sessionLimitRequests.append(limit)
         return sessionsByLimit[limit] ?? sessionsResult
@@ -221,7 +309,18 @@ actor MockAPIClient: APIClientProtocol {
         if let sessionError { throw sessionError }
         return sessionResult ?? createSessionResult
     }
-    func createSession(title: String?, directory: String?) async throws -> Session { createSessionResult }
+    func createSession(title: String?, directory: String?) async throws -> Session {
+        createSessionCalls.append((title, directory))
+        if suspendCreateSession {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                createSessionWaiters.append(cont)
+                let pending = createSessionObservers
+                createSessionObservers.removeAll()
+                pending.forEach { $0.resume() }
+            }
+        }
+        return createSessionResult
+    }
 
     func updateSession(sessionID: String, title: String) async throws -> Session {
         updateSessionCalls.append((sessionID, title))
@@ -276,6 +375,14 @@ actor MockAPIClient: APIClientProtocol {
 
     func promptStructured(sessionID: String, messageID: String?, text: String, system: String, format: StructuredOutputFormat, agent: String, model: Message.ModelInfo) async throws -> MessageWithParts {
         promptStructuredCalls.append((sessionID, messageID, text, system, agent, model.providerID, model.modelID))
+        if suspendPromptStructured {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                promptStructuredWaiters.append(cont)
+                let pending = promptStructuredObservers
+                promptStructuredObservers.removeAll()
+                pending.forEach { $0.resume() }
+            }
+        }
         if promptStructuredDelayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: promptStructuredDelayNanoseconds)
         }
@@ -336,13 +443,48 @@ actor MockAPIClient: APIClientProtocol {
 final class MockCarSpeechOutput: CarSpeechOutputProviding {
     var spokenTexts: [String] = []
     var stopCount = 0
+    private var suspendSpeak = false
+    private var speakWaiters: [CheckedContinuation<Void, Never>] = []
+    private var speakObservers: [CheckedContinuation<Void, Never>] = []
+
+    func setSuspendSpeak(_ value: Bool) {
+        suspendSpeak = value
+    }
+
+    func waitUntilSpeakPending(_ count: Int) async {
+        while speakWaiters.count < count {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                speakObservers.append(cont)
+            }
+        }
+    }
+
+    func releaseSpeak() {
+        suspendSpeak = false
+        resumeSpeakWaiters()
+    }
 
     func speak(_ text: String) async {
         spokenTexts.append(text)
+        if suspendSpeak {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                speakWaiters.append(cont)
+                let pending = speakObservers
+                speakObservers.removeAll()
+                pending.forEach { $0.resume() }
+            }
+        }
     }
 
     func stop() {
         stopCount += 1
+        resumeSpeakWaiters()
+    }
+
+    private func resumeSpeakWaiters() {
+        let pending = speakWaiters
+        speakWaiters.removeAll()
+        pending.forEach { $0.resume() }
     }
 }
 
