@@ -48,15 +48,165 @@ nonisolated struct AnyCodable: Codable {
     }
 }
 
+enum SSEStreamFailure: Error, Equatable, Sendable {
+    case httpStatus(Int)
+    case notEventStream
+
+    var pausesAutomaticRetry: Bool {
+        guard case .httpStatus(let code) = self else { return false }
+        return code == 401 || code == 403
+    }
+}
+
+nonisolated struct SSEStreamLease: @unchecked Sendable {
+    var events: AsyncThrowingStream<SSEEvent, Error>
+    var cancel: @Sendable () -> Void
+}
+
+nonisolated final class SSEConnectionCancel: @unchecked Sendable {
+    private let lock = NSLock()
+    private var producer: Task<Void, Never>?
+    private var responseCancel: (@Sendable () -> Void)?
+    private var cancelled = false
+    private var closedResponse = false
+
+    func bindProducer(_ task: Task<Void, Never>) {
+        lock.lock()
+        producer = task
+        let shouldCancel = cancelled
+        lock.unlock()
+        if shouldCancel {
+            task.cancel()
+        }
+    }
+
+    func bindResponse(_ cancel: @escaping @Sendable () -> Void) {
+        lock.lock()
+        responseCancel = cancel
+        let shouldClose = cancelled && !closedResponse
+        if shouldClose {
+            closedResponse = true
+        }
+        lock.unlock()
+        if shouldClose {
+            cancel()
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let producer = self.producer
+        let close = closedResponse ? nil : responseCancel
+        if close != nil {
+            closedResponse = true
+        }
+        lock.unlock()
+        producer?.cancel()
+        close?()
+    }
+}
+
+protocol SSEHTTPOpener: Sendable {
+    func open(_ request: URLRequest) async throws -> SSEHTTPResponse
+}
+
+struct SSEHTTPResponse: Sendable {
+    var statusCode: Int
+    var contentType: String?
+    var bytes: AsyncThrowingStream<UInt8, Error>
+    var cancel: @Sendable () -> Void
+}
+
+final class URLSessionSSEHTTPOpener: SSEHTTPOpener, @unchecked Sendable {
+    func open(_ request: URLRequest) async throws -> SSEHTTPResponse {
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let http = response as? HTTPURLResponse
+        let handle = SSEReadHandle(task: bytes.task)
+        let stream = AsyncThrowingStream<UInt8, Error> { continuation in
+            let reader = Task {
+                do {
+                    for try await byte in bytes {
+                        continuation.yield(byte)
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            handle.reader = reader
+            continuation.onTermination = { _ in
+                reader.cancel()
+                handle.task.cancel()
+            }
+        }
+        return SSEHTTPResponse(
+            statusCode: http?.statusCode ?? 0,
+            contentType: http?.value(forHTTPHeaderField: "Content-Type"),
+            bytes: stream,
+            cancel: { handle.cancel() }
+        )
+    }
+}
+
+final class SSEReadHandle: @unchecked Sendable {
+    let task: URLSessionTask
+    var reader: Task<Void, Never>?
+
+    init(task: URLSessionTask) {
+        self.task = task
+    }
+
+    func cancel() {
+        reader?.cancel()
+        task.cancel()
+    }
+}
+
 actor SSEClient {
+    private let opener: any SSEHTTPOpener
+
+    init(opener: any SSEHTTPOpener = URLSessionSSEHTTPOpener()) {
+        self.opener = opener
+    }
+
+    nonisolated static func acceptHTTP(statusCode: Int, contentType: String?) throws {
+        guard (200..<300).contains(statusCode) else {
+            throw SSEStreamFailure.httpStatus(statusCode)
+        }
+        let mediaType = contentType?
+            .split(separator: ";", maxSplits: 1)
+            .first
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() } ?? ""
+        guard mediaType == "text/event-stream" else {
+            throw SSEStreamFailure.notEventStream
+        }
+    }
+
     func connect(
         baseURL: String,
         username: String? = nil,
         password: String? = nil
     ) -> AsyncThrowingStream<SSEEvent, Error> {
+        connectLease(baseURL: baseURL, username: username, password: password).events
+    }
+
+    func connectLease(
+        baseURL: String,
+        username: String? = nil,
+        password: String? = nil
+    ) -> SSEStreamLease {
         let urlString = baseURL.hasPrefix("http") ? baseURL : "http://\(baseURL)"
         guard let url = URL(string: "\(urlString)/global/event") else {
-            return AsyncThrowingStream { $0.finish(throwing: APIError.invalidURL) }
+            return SSEStreamLease(
+                events: AsyncThrowingStream { $0.finish(throwing: APIError.invalidURL) },
+                cancel: {}
+            )
+        }
+        if Task.isCancelled {
+            return SSEStreamLease(events: AsyncThrowingStream { $0.finish() }, cancel: {})
         }
         var request = URLRequest(url: url)
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -68,72 +218,101 @@ actor SSEClient {
             }
         }
 
-        return AsyncThrowingStream { continuation in
+        let handle = SSEConnectionCancel()
+        let opener = self.opener
+        let events = AsyncThrowingStream<SSEEvent, Error> { continuation in
             let task = Task {
+                if Task.isCancelled {
+                    continuation.finish()
+                    return
+                }
+                let opened: SSEHTTPResponse
                 do {
-                    let (bytes, _) = try await URLSession.shared.bytes(for: request)
-
-                    var lineBuffer = Data()
-                    var eventDataLines: [String] = []
-
-                    func flushEventIfNeeded() {
-                        guard !eventDataLines.isEmpty else { return }
-                        let json = eventDataLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                        eventDataLines.removeAll(keepingCapacity: true)
-
-                        guard !json.isEmpty, json != "[DONE]" else { return }
-                        let data = Data(json.utf8)
-                        if let event = try? JSONDecoder().decode(SSEEvent.self, from: data) {
-                            continuation.yield(event)
-                        }
-                    }
-
-                    for try await byte in bytes {
-                        try Task.checkCancellation()
-
-                        if byte == 0x0A {  // \n
-                            // Process a single SSE line (UTF-8)
-                            if lineBuffer.last == 0x0D { lineBuffer.removeLast() }  // \r
-                            let line = String(decoding: lineBuffer, as: UTF8.self)
-                            lineBuffer.removeAll(keepingCapacity: true)
-
-                            if line.isEmpty {
-                                // Empty line = event delimiter
-                                flushEventIfNeeded()
-                                continue
-                            }
-
-                            if line.hasPrefix(":") {
-                                // Comment/keep-alive; ignore
-                                continue
-                            }
-
-                            if line.hasPrefix("data:") {
-                                var payload = String(line.dropFirst(5))
-                                if payload.hasPrefix(" ") { payload.removeFirst() }
-                                eventDataLines.append(payload)
-                            }
-
-                            continue
-                        }
-
-                        lineBuffer.append(byte)
-                    }
-
-                    // Stream ended; flush any pending event
-                    flushEventIfNeeded()
+                    opened = try await opener.open(request)
+                } catch is CancellationError {
+                    continuation.finish()
+                    return
+                } catch {
+                    continuation.finish(throwing: error)
+                    return
+                }
+                handle.bindResponse(opened.cancel)
+                if Task.isCancelled {
+                    handle.cancel()
+                    continuation.finish()
+                    return
+                }
+                do {
+                    try Self.acceptHTTP(statusCode: opened.statusCode, contentType: opened.contentType)
+                    try await Self.consume(opened.bytes, into: continuation)
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
+                handle.cancel()
             }
-
+            handle.bindProducer(task)
             continuation.onTermination = { _ in
-                task.cancel()
+                handle.cancel()
             }
         }
+        if Task.isCancelled {
+            handle.cancel()
+        }
+        return SSEStreamLease(events: events, cancel: { handle.cancel() })
+    }
+
+    private nonisolated static func consume(
+        _ bytes: AsyncThrowingStream<UInt8, Error>,
+        into continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation
+    ) async throws {
+        var lineBuffer = Data()
+        var eventDataLines: [String] = []
+
+        func flushEventIfNeeded() {
+            guard !eventDataLines.isEmpty else { return }
+            let json = eventDataLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            eventDataLines.removeAll(keepingCapacity: true)
+
+            guard !json.isEmpty, json != "[DONE]" else { return }
+            let data = Data(json.utf8)
+            if let event = try? JSONDecoder().decode(SSEEvent.self, from: data) {
+                continuation.yield(event)
+            }
+        }
+
+        for try await byte in bytes {
+            try Task.checkCancellation()
+
+            if byte == 0x0A {
+                if lineBuffer.last == 0x0D { lineBuffer.removeLast() }
+                let line = String(decoding: lineBuffer, as: UTF8.self)
+                lineBuffer.removeAll(keepingCapacity: true)
+
+                if line.isEmpty {
+                    flushEventIfNeeded()
+                    continue
+                }
+
+                if line.hasPrefix(":") {
+                    continue
+                }
+
+                if line.hasPrefix("data:") {
+                    var payload = String(line.dropFirst(5))
+                    if payload.hasPrefix(" ") { payload.removeFirst() }
+                    eventDataLines.append(payload)
+                }
+
+                continue
+            }
+
+            lineBuffer.append(byte)
+        }
+
+        flushEventIfNeeded()
     }
 }
 

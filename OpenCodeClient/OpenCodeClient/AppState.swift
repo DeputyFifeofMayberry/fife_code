@@ -822,9 +822,12 @@ final class AppState {
     /// received. Internal so unit tests can pre-seed it and drive
     /// `checkSSEWatchdog()` deterministically.
     var sseLastFrameAt: Date?
-    /// Heartbeat watchdog task; same lifecycle as `sseTask` (launched after a
-    /// successful connect + bootstrap, cancelled when the stream ends).
+    /// Heartbeat watchdog for the current `sseConnectionToken` only.
     var sseWatchdogTask: Task<Void, Never>?
+    var sseConnectionToken: UInt64 = 0
+    var sseReconnectSleep: (TimeInterval) async -> Void = { seconds in
+        try? await Task.sleep(for: .seconds(seconds))
+    }
     nonisolated static let sseWatchdogCheckInterval: TimeInterval = 5
     nonisolated static let sseSilenceThreshold: TimeInterval = 20
 

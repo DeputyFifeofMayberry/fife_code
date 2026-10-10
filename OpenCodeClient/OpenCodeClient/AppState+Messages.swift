@@ -92,6 +92,7 @@ extension AppState {
             if isBusySession(currentSessionStatus) {
                 refreshSessionActivityText(sessionID: sessionID)
             }
+            recomputeSessionActivityAfterMessageSnapshot(sessionID: sessionID)
         } catch let error as DecodingError {
             Self.logger.error("loadMessages decode failed: session=\(sessionID, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         } catch {
