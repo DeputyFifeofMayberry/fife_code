@@ -109,11 +109,6 @@ struct AIUsageQuotaTests {
     }
 
     @Test @MainActor func blankEndpointMakesNoRequest() async {
-        let previous = UserDefaults.standard.string(forKey: AppState.aiUsageDashboardURLKey)
-        defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: AppState.aiUsageDashboardURLKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.aiUsageDashboardURLKey) }
-        }
         let mock = MockAIUsageQuotaClient(result: .success(.init(generatedAt: nil, quotas: [])))
         let state = makeIsolatedAppState(aiUsageQuotaClient: mock)
         state.aiUsageDashboardURL = ""
@@ -125,11 +120,6 @@ struct AIUsageQuotaTests {
     }
 
     @Test @MainActor func refreshLoadsSelectedGPTQuota() async {
-        let previous = UserDefaults.standard.string(forKey: AppState.aiUsageDashboardURLKey)
-        defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: AppState.aiUsageDashboardURLKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.aiUsageDashboardURLKey) }
-        }
         let quota = AIUsageQuota(
             provider: "codex",
             label: "5h",
@@ -154,11 +144,6 @@ struct AIUsageQuotaTests {
     }
 
     @Test @MainActor func refreshLoadsSelectedGrokQuota() async {
-        let previous = UserDefaults.standard.string(forKey: AppState.aiUsageDashboardURLKey)
-        defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: AppState.aiUsageDashboardURLKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.aiUsageDashboardURLKey) }
-        }
         let quota = AIUsageQuota(
             provider: "grok",
             label: "Weekly",
@@ -182,11 +167,6 @@ struct AIUsageQuotaTests {
     }
 
     @Test @MainActor func manualRefreshUpdatesDashboardBeforeFetchingQuotas() async {
-        let previous = UserDefaults.standard.string(forKey: AppState.aiUsageDashboardURLKey)
-        defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: AppState.aiUsageDashboardURLKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.aiUsageDashboardURLKey) }
-        }
         let mock = MockAIUsageQuotaClient(result: .success(.init(generatedAt: nil, quotas: [])))
         let state = makeIsolatedAppState(aiUsageQuotaClient: mock)
         state.aiUsageDashboardURL = "https://usage.example.com"

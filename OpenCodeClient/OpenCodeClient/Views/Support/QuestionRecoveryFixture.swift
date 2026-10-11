@@ -20,11 +20,7 @@ enum QuestionRecoveryFixture {
     }
 
     static func makeAppState() -> AppState {
-        L10n.languagePreference = .en
-        return AppState(
-            apiClient: StubClient(),
-            userDefaults: UserDefaults(suiteName: "opencode.uitest.question-recovery.\(UUID().uuidString)")!
-        )
+        UITestFixtures.makeFixtureAppState(apiClient: StubClient(), label: "question-recovery")
     }
 
     static func apply(to state: AppState) {

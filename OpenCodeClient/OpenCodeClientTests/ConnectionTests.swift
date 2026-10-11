@@ -69,22 +69,56 @@ struct HostProfileTests {
     }
 
     @Test @MainActor func defaultProfileMigratesFromLegacyServerURL() {
-        withIsolatedHostProfileDefaults {
-            UserDefaults.standard.set("https://legacy.example.invalid", forKey: AppState.serverURLKey)
-
-            let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
-
-            #expect(state.hostProfiles.count == 1)
-            #expect(state.currentHostProfile?.displayName == "Local OpenCode")
-            #expect(state.currentHostProfile?.transport == .direct)
-            #expect(state.currentHostProfile?.serverURL == "https://legacy.example.invalid")
-            #expect(state.serverURL == "https://legacy.example.invalid")
+        let standardServer = UserDefaults.standard.object(forKey: AppState.serverURLKey)
+        let standardProfiles = UserDefaults.standard.data(forKey: AppState.hostProfilesKey)
+        let standardCurrent = UserDefaults.standard.string(forKey: AppState.currentHostProfileIDKey)
+        let standardSSH = UserDefaults.standard.data(forKey: "sshTunnelConfig")
+        defer {
+            restoreStandardObject(standardServer, key: AppState.serverURLKey)
+            restoreStandardData(standardProfiles, key: AppState.hostProfilesKey)
+            restoreStandardObject(standardCurrent, key: AppState.currentHostProfileIDKey)
+            restoreStandardData(standardSSH, key: "sshTunnelConfig")
         }
+
+        let enabled = SSHTunnelConfig(isEnabled: true, host: "gateway.example.invalid", port: 22, username: "opencode", remotePort: 19001)
+        let enabledData = try! JSONEncoder().encode(enabled)
+        UserDefaults.standard.set(enabledData, forKey: "sshTunnelConfig")
+        let serverBefore = UserDefaults.standard.object(forKey: AppState.serverURLKey)
+        let profilesBefore = UserDefaults.standard.data(forKey: AppState.hostProfilesKey)
+        let currentBefore = UserDefaults.standard.string(forKey: AppState.currentHostProfileIDKey)
+
+        let defaults = makeIsolatedUserDefaults()
+        defaults.set("https://legacy.example.invalid", forKey: AppState.serverURLKey)
+        let recorder = MigrationCredentialRecorder()
+        let state = makeIsolatedAppState(userDefaults: defaults, hostCredentialAccess: recorder.access())
+
+        #expect(state.hostProfiles.count == 1)
+        #expect(state.currentHostProfile?.displayName == "Local OpenCode")
+        #expect(state.currentHostProfile?.transport == .direct)
+        #expect(state.currentHostProfile?.serverURL == "https://legacy.example.invalid")
+        #expect(state.serverURL == "https://legacy.example.invalid")
+        #expect(state.sshTunnelManager.config.isEnabled == false)
+        let profileID = state.currentHostProfileID
+
+        let rebuilt = makeIsolatedAppState(userDefaults: defaults, hostCredentialAccess: recorder.access())
+        #expect(rebuilt.currentHostProfileID == profileID)
+        #expect(rebuilt.currentHostProfile?.serverURL == "https://legacy.example.invalid")
+        #expect(rebuilt.serverURL == "https://legacy.example.invalid")
+        #expect(rebuilt.sshTunnelManager.config.isEnabled == false)
+        #expect(recorder.saves.isEmpty)
+        #expect(recorder.deletes.isEmpty)
+        #expect(!recorder.loads.isEmpty)
+        #expect(recorder.loads.allSatisfy { $0 == AppState.passwordKeychainKey })
+
+        #expect(UserDefaults.standard.data(forKey: "sshTunnelConfig") == enabledData)
+        #expect(UserDefaults.standard.data(forKey: AppState.hostProfilesKey) == profilesBefore)
+        #expect(UserDefaults.standard.string(forKey: AppState.currentHostProfileIDKey) == currentBefore)
+        #expect((UserDefaults.standard.object(forKey: AppState.serverURLKey) as? String) == (serverBefore as? String))
     }
 
     @Test @MainActor func applySSHTunnelProfileToRuntime() throws {
         try withIsolatedHostProfileDefaults {
-            let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+            let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
             let profile = HostProfile(
                 name: "SSH Lab",
                 transport: .sshTunnel,
@@ -105,7 +139,7 @@ struct HostProfileTests {
 
     @Test @MainActor func exportSSHTunnelHostConfigOmitsSecretsAndRuntimeState() throws {
         withIsolatedHostProfileDefaults {
-            let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+            let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
             let profile = HostProfile(
                 name: "SSH Lab",
                 transport: .sshTunnel,
@@ -127,7 +161,7 @@ struct HostProfileTests {
 
     @Test @MainActor func friendlyConnectionErrorMapsRawAPIError() {
         withIsolatedHostProfileDefaults {
-            let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+            let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
 
             let message = state.friendlyConnectionError(APIError.invalidURL, phase: .health)
 
@@ -138,7 +172,7 @@ struct HostProfileTests {
 
     @Test @MainActor func deleteOnlyHostThrows() throws {
         withIsolatedHostProfileDefaults {
-            let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+            let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
             let profile = state.currentHostProfile!
 
             #expect(throws: HostProfileError.cannotDeleteOnlyHost) {
@@ -157,25 +191,51 @@ private extension HostProfileImportPayload {
 }
 
 @MainActor
+private final class MigrationCredentialRecorder {
+    var loads: [String] = []
+    var saves: [String] = []
+    var deletes: [String] = []
+
+    func access() -> HostCredentialAccess {
+        HostCredentialAccess(
+            save: { [weak self] _, key in self?.saves.append(key) },
+            load: { [weak self] key in
+                self?.loads.append(key)
+                return nil
+            },
+            delete: { [weak self] key in self?.deletes.append(key) }
+        )
+    }
+}
+
+@MainActor
+private func restoreStandardObject(_ value: Any?, key: String) {
+    if let value {
+        UserDefaults.standard.set(value, forKey: key)
+    } else {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+}
+
+@MainActor
+private func restoreStandardData(_ value: Data?, key: String) {
+    if let value {
+        UserDefaults.standard.set(value, forKey: key)
+    } else {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+}
+
+@MainActor
 private func withIsolatedHostProfileDefaults(_ body: () throws -> Void) rethrows {
-    let keys = [
-        AppState.serverURLKey,
-        AppState.usernameKey,
-        AppState.hostProfilesKey,
-        AppState.currentHostProfileIDKey,
-        "sshTunnelConfig",
-    ]
-    let previous = Dictionary(uniqueKeysWithValues: keys.map { ($0, UserDefaults.standard.object(forKey: $0)) })
-    keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
+    let previousSSH = UserDefaults.standard.object(forKey: "sshTunnelConfig")
     defer {
-        keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
-        for (key, value) in previous {
-            if let value {
-                UserDefaults.standard.set(value, forKey: key)
-            }
+        if let previousSSH {
+            UserDefaults.standard.set(previousSSH, forKey: "sshTunnelConfig")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "sshTunnelConfig")
         }
     }
-
     try body()
 }
 
@@ -322,27 +382,24 @@ struct SSHTunnelTests {
     }
 
     @Test @MainActor func sshTunnelManagerInitialStatus() {
-        let manager = SSHTunnelManager()
+        let manager = SSHTunnelManager(defaults: makeIsolatedUserDefaults())
         #expect(manager.status == .disconnected)
         #expect(manager.config.isEnabled == false)
     }
 
     @Test @MainActor func sshTunnelManagerConfigPersistence() {
-        let manager = SSHTunnelManager()
+        let defaults = makeIsolatedUserDefaults()
+        let manager = SSHTunnelManager(defaults: defaults)
         manager.config.host = "test.example.com"
         manager.config.port = 2222
         manager.config.username = "testuser"
         manager.config.remotePort = 9999
-        
-        // Create a new manager to test persistence
-        let manager2 = SSHTunnelManager()
+
+        let manager2 = SSHTunnelManager(defaults: defaults)
         #expect(manager2.config.host == "test.example.com")
         #expect(manager2.config.port == 2222)
         #expect(manager2.config.username == "testuser")
         #expect(manager2.config.remotePort == 9999)
-        
-        // Clean up
-        manager2.config = .default
     }
 }
 

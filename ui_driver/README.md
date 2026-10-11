@@ -88,19 +88,20 @@ With `--project`, `--scheme`, and `--destination`, `tree` runs
 `observability: xcuitest_accessibility_snapshot`. This is a focused XCTest
 bridge, not a full tree dump. For iOS, the XCTest bridge is the preferred stable
 surface for exact element identity: it sees accessibility identifiers such as
-`chat-input`, `chat-send`, `settings-server-url`, and `toolcard.read.*` without
+`chat-input`, `chat-send`, `settings-current-host`, `host-server-url`, and `toolcard.read.*` without
 relying on coordinates.
 
 `configure-server` and `send-prompt` pass URL, username, password, and prompt to
 XCTest through a temporary `0600` config file at `/tmp/opencode-ios-tier4-config.json`.
 Prefer `--password-env OPENCODE_PASSWORD` over `--password` so secrets are not
-placed on the driver command line. Password entry uses paste/keyboard shortcut
-rather than `typeText`, and JSON output masks passwords in stdout/stderr tails.
+placed on the driver command line. Password entry uses `typeText` on the secure
+field, and JSON output masks passwords in stdout/stderr tails.
 The driver also adds `-parallel-testing-enabled NO` to avoid flaky Xcode UI test
 runner clones.
 
-Live validation against a dedicated 4097 OpenCode server has passed for both
-`configure-server` and `send-prompt`.
+The `configure-server` workflow opens Settings using English or Chinese tab labels rather than fixed indices, even when Car entries appear. It navigates `settings-current-host` → `hosts-add-host`, enters the name, server URL, `host-username` and `host-password`, saves via `host-save`, and runs `settings-test-connection`. Every run creates and persists a new current host profile and credentials without deleting previous profiles. Connection acceptance requires the exact `host-connection-phase` value (`Connected`/`已连接` vs. `Connection failed`/`连接失败`); words such as Connected or failover in the URL or diagnostic body do not represent connection state.
+
+The `send-prompt` driver locks onto the new source user message ID until its status is `confirmed` with a matching server ACK. Completion is never accepted based on a pending state, row appearance, an empty composer, or a fixed one-second wait; a `failed` status triggers failure. The updated flows passed three offline UI tests, but live validation has not yet been performed.
 
 ## Tests
 

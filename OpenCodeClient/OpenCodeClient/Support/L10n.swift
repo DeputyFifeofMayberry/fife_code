@@ -1381,12 +1381,23 @@ enum L10n {
         Key.todoUpdatedBadge.rawValue: "任务更新 · %d/%d",
     ]
 
+    static var ephemeralLanguageOverride: LanguagePreference?
+
+    static func useEphemeralLanguage(_ preference: LanguagePreference) {
+        ephemeralLanguageOverride = preference
+    }
+
     static var languagePreference: LanguagePreference {
         get {
+            if let ephemeralLanguageOverride { return ephemeralLanguageOverride }
             let raw = UserDefaults.standard.string(forKey: languagePreferenceUserDefaultsKey)
             return raw.flatMap(LanguagePreference.init(rawValue:)) ?? .system
         }
         set {
+            if ephemeralLanguageOverride != nil {
+                ephemeralLanguageOverride = newValue
+                return
+            }
             UserDefaults.standard.set(newValue.rawValue, forKey: languagePreferenceUserDefaultsKey)
         }
     }

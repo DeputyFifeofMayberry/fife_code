@@ -218,6 +218,11 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
         }
+        .overlay(alignment: .topTrailing) {
+            if Tier4OfflineFixture.isActive {
+                Tier4OfflineControls()
+            }
+        }
         .task {
             state.cleanupClientCapabilityCallbacks()
             if UITestFixtures.hasUITestDeepLinkFixture,

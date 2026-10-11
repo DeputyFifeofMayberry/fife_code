@@ -23,9 +23,11 @@ enum UITestFixtures {
             || hasUITestDeepLinkFixture
             || hasUITestModelShortlistFixture
             || hasHostEditorCredentialFixture
+            || hasUITestHostProfilesFixture
             || SessionScrollFixture.isActive
             || FileSearchFixture.isActive
             || FileContentReuseFixture.isActive
+            || Tier4OfflineFixture.isActive
     }
 
     static var hasUITestWebPreviewModeFixture: Bool {
@@ -127,7 +129,48 @@ enum UITestFixtures {
         return text
     }
 
+    static func isolatedDefaults(label: String) -> UserDefaults {
+        let name = "opencode.uitest.\(label).\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        defaults.set("http://host.example.invalid:9", forKey: AppState.serverURLKey)
+        return defaults
+    }
+
+    static func makeFixtureAppState(
+        apiClient: APIClientProtocol = APIClient(),
+        sseClient: SSEClientProtocol = SSEClient(),
+        label: String,
+        deepLinkSessionResolver: ((String) async throws -> Session)? = nil,
+        deepLinkHydratesSelection: Bool = true,
+        hostCredentialAccess: HostCredentialAccess = .noExternal
+    ) -> AppState {
+        L10n.useEphemeralLanguage(.en)
+        let defaults = isolatedDefaults(label: label)
+        return AppState(
+            apiClient: apiClient,
+            sseClient: sseClient,
+            sshTunnelManager: SSHTunnelManager(defaults: defaults),
+            deepLinkSessionResolver: deepLinkSessionResolver,
+            deepLinkHydratesSelection: deepLinkHydratesSelection,
+            userDefaults: defaults,
+            hostCredentialAccess: hostCredentialAccess
+        )
+    }
+
+    static var isUITestLaunch: Bool {
+        ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("UITEST_") }
+    }
+
     static func makeInitialState() -> AppState {
+        if isUITestLaunch {
+            L10n.useEphemeralLanguage(.en)
+        }
+        if Tier4OfflineFixture.isActive {
+            let state = Tier4OfflineFixture.makeAppState()
+            Tier4OfflineFixture.apply(to: state)
+            return state
+        }
         if QuestionRecoveryFixture.isActive {
             let state = QuestionRecoveryFixture.makeAppState()
             QuestionRecoveryFixture.apply(to: state)
@@ -145,8 +188,7 @@ enum UITestFixtures {
         }
 
         if hasUITestWebPreviewRetryFixture {
-            L10n.languagePreference = .en
-            return AppState(userDefaults: UserDefaults(suiteName: "opencode.uitest.web-preview-retry.\(UUID().uuidString)")!)
+            return makeFixtureAppState(label: "web-preview-retry")
         }
 
         if SessionScrollFixture.isActive {
@@ -156,10 +198,8 @@ enum UITestFixtures {
         }
 
         if hasHostEditorCredentialFixture {
-            L10n.languagePreference = .en
-            let defaults = UserDefaults(suiteName: "opencode.uitest.host-editor.\(UUID().uuidString)")!
-            let state = AppState(
-                userDefaults: defaults,
+            let state = makeFixtureAppState(
+                label: "host-editor",
                 hostCredentialAccess: HostEditorCredentialFixture.access()
             )
             applyHostEditorCredentialFixture(to: state)
@@ -168,7 +208,8 @@ enum UITestFixtures {
 
         let state: AppState
         if hasUITestDeepLinkFixture {
-            state = AppState(
+            state = makeFixtureAppState(
+                label: "deep-link",
                 deepLinkSessionResolver: { sessionID in
                     guard sessionID == "ses_deep_link_target" else {
                         throw APIError.httpError(statusCode: 404, data: Data())
@@ -181,6 +222,8 @@ enum UITestFixtures {
                 },
                 deepLinkHydratesSelection: false
             )
+        } else if isUITestLaunch {
+            state = makeFixtureAppState(label: "fixture")
         } else {
             state = AppState()
         }
@@ -524,7 +567,7 @@ enum UITestFixtures {
         let local = HostProfile(
             name: "Local OpenCode",
             transport: .direct,
-            serverURL: "127.0.0.1:4096",
+            serverURL: "http://host.example.invalid:9",
             basicAuth: nil,
             ssh: nil,
             lastUsedAt: Date(timeIntervalSince1970: 1_000)
