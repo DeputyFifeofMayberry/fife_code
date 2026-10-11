@@ -61,10 +61,12 @@ enum FileContentReuseFixture {
         probe.lateDelivered = false
         let script = FileContentScript()
         self.script = script
+        let defaults = UITestFixtures.isolatedDefaults(label: "file-content")
         return AppState(
             apiClient: script,
             sseClient: SSEClient(),
-            userDefaults: UserDefaults(suiteName: "opencode.uitest.file-content.\(UUID().uuidString)")!,
+            sshTunnelManager: SSHTunnelManager(defaults: defaults),
+            userDefaults: defaults,
             hostCredentialAccess: HostCredentialAccess(
                 save: { _, _ in },
                 load: { _ in nil },

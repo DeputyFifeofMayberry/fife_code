@@ -113,36 +113,27 @@ struct LocalizationTests {
         #expect(L10n.missingChineseKeys.isEmpty)
     }
 
-    @Test func languagePreferenceOverridesSystemLanguage() {
+    @Test @MainActor func languagePreferenceOverridesSystemLanguage() {
         let key = L10n.languagePreferenceUserDefaultsKey
-        let previous = UserDefaults.standard.string(forKey: key)
-        defer {
-            if let previous {
-                UserDefaults.standard.set(previous, forKey: key)
-            } else {
-                UserDefaults.standard.removeObject(forKey: key)
-            }
-        }
+        let standardBefore = UserDefaults.standard.string(forKey: key)
+        let previousOverride = L10n.ephemeralLanguageOverride
+        defer { L10n.ephemeralLanguageOverride = previousOverride }
 
-        L10n.languagePreference = .zh
+        L10n.useEphemeralLanguage(.zh)
         #expect(L10n.t(.appChat) == "聊天")
 
         L10n.languagePreference = .en
         #expect(L10n.t(.appChat) == "Chat")
+        #expect(UserDefaults.standard.string(forKey: key) == standardBefore)
     }
 
-    @Test func countHelpersFormatStableLocalizedIntegers() {
+    @Test @MainActor func countHelpersFormatStableLocalizedIntegers() {
         let key = L10n.languagePreferenceUserDefaultsKey
-        let previous = UserDefaults.standard.string(forKey: key)
-        defer {
-            if let previous {
-                UserDefaults.standard.set(previous, forKey: key)
-            } else {
-                UserDefaults.standard.removeObject(forKey: key)
-            }
-        }
+        let standardBefore = UserDefaults.standard.string(forKey: key)
+        let previousOverride = L10n.ephemeralLanguageOverride
+        defer { L10n.ephemeralLanguageOverride = previousOverride }
 
-        L10n.languagePreference = .en
+        L10n.useEphemeralLanguage(.en)
         #expect(L10n.toolCallsCount(2) == "2 tool calls")
         #expect(L10n.sessionsFiles(2) == "2 files")
         #expect(L10n.patchFilesChanged(2) == "2 files changed")
@@ -151,6 +142,7 @@ struct LocalizationTests {
         #expect(L10n.toolCallsCount(2) == "2 个工具调用")
         #expect(L10n.sessionsFiles(2) == "2 个文件")
         #expect(L10n.patchFilesChanged(2) == "2 个文件已变更")
+        #expect(UserDefaults.standard.string(forKey: key) == standardBefore)
     }
 }
 

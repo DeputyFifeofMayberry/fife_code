@@ -79,7 +79,7 @@ struct SessionScopedStateTests {
     }
 
     @Test @MainActor func clearSessionScopedCachesDropsQuestionsForThatSessionOnly() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
         state.pendingQuestions = [
             QuestionRequest(id: "q1", sessionID: "s1", questions: [], tool: nil),
             QuestionRequest(id: "q2", sessionID: "s2", questions: [], tool: nil)

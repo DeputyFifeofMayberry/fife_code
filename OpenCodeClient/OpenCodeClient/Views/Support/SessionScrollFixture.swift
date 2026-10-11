@@ -27,7 +27,7 @@ enum SessionScrollFixture {
     static let topAnchorLabel = "Long message 001"
 
     static func makeAppState() -> AppState {
-        AppState(apiClient: StubClient())
+        UITestFixtures.makeFixtureAppState(apiClient: StubClient(), label: "session-scroll")
     }
 
     static func apply(to state: AppState) {

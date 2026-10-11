@@ -101,7 +101,6 @@ struct HostProfilesView: View {
                 }
                 .accessibilityIdentifier("hosts-add-host")
             }
-            .accessibilityIdentifier("hosts-list-section")
 
             #if !os(visionOS)
             Section(L10n.t(.hostDeviceKey)) {
@@ -297,16 +296,20 @@ struct DiagnosticSummaryView: View {
             Label(diagnostic.phase.label, systemImage: diagnostic.phase == .connected ? "checkmark.circle" : "exclamationmark.triangle")
                 .font(.caption)
                 .foregroundStyle(diagnostic.phase == .connected ? DesignColors.Semantic.success : .orange)
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier("host-connection-phase")
+                .accessibilityLabel(diagnostic.phase.label)
+                .accessibilityValue(diagnostic.phase.label)
             Text(diagnostic.message)
                 .font(.caption)
                 .foregroundStyle(diagnostic.phase == .connected ? Color.secondary : Color.red)
+                .accessibilityIdentifier("host-connection-diagnostic")
             if let recoveryHint = diagnostic.recoveryHint {
                 Text(recoveryHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
-        .accessibilityIdentifier("host-connection-diagnostic")
     }
 }
 
@@ -379,6 +382,9 @@ private struct HostProfileDetailView: View {
         Form {
             if UITestFixtures.hasHostEditorCredentialFixture {
                 HostCredentialRecordSentinel()
+            }
+            if Tier4OfflineFixture.isActive {
+                Tier4CredentialSentinel()
             }
             if let profile {
                 Section(L10n.t(.hostOverview)) {
@@ -669,6 +675,7 @@ struct HostProfileEditorView: View {
                     TextField(L10n.t(.settingsUsername), text: basicAuthUsernameBinding)
                         .textContentType(.username)
                         .textInputAutocapitalization(.never)
+                        .accessibilityIdentifier("host-username")
                     SecureField(L10n.t(.settingsPassword), text: passwordBinding)
                         .textContentType(.password)
                         .accessibilityIdentifier("host-password")

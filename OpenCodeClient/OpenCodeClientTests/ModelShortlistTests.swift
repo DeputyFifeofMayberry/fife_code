@@ -35,13 +35,14 @@ struct ModelShortlistTests {
         return AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
-            userDefaults: defaults
+            sshTunnelManager: SSHTunnelManager(defaults: defaults),
+            userDefaults: defaults,
+            hostCredentialAccess: .noExternal
         )
     }
 
     @Test @MainActor func dynamicPickerUsesConnectedProvidersAndFiltersNonChatModels() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
         let registry = ProviderRegistryResponse(
             providers: [
                 // Connected custom Ollama provider (issue #144 scenario):
@@ -90,7 +91,7 @@ struct ModelShortlistTests {
     }
 
     @Test @MainActor func dynamicPickerPrefersCuratedOrderThenSortsByName() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
         let registry = ProviderRegistryResponse(
             providers: [
                 Self.makeRegistryProvider(id: "xai", name: "xAI", models: [("grok-4.7", "Grok 4.7", true)]),
@@ -271,8 +272,7 @@ struct ModelShortlistTests {
 
     @Test @MainActor func syncModelFromMessageHistoryAddsAdHocEntryForUnknownModel() async {
         let apiClient = MockAPIClient()
-        UserDefaults.standard.removeObject(forKey: AppState.modelShortlistKey)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         if !state.modelShortlist.isEmpty { state.modelShortlist = [] }
         state.currentSessionID = "s1"
         // Session was created elsewhere with a model not in any picker list,

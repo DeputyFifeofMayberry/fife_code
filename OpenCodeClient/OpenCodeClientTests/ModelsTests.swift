@@ -193,7 +193,7 @@ struct ContextUsageThroughputTests {
 
     @Test @MainActor
     func aggregatesThroughputAndExcludesRunning() async throws {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         let session = try JSONDecoder().decode(Session.self, from: """
         {"id":"ses_x","slug":"ses_x","projectID":"p1","directory":"/workspace","title":"S","version":"1","time":{"created":1,"updated":2}}
         """.data(using: .utf8)!)
@@ -222,7 +222,7 @@ struct ContextUsageThroughputTests {
 
     @Test @MainActor
     func excludesToolTimeFromAggregate() async throws {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         let session = try JSONDecoder().decode(Session.self, from: """
         {"id":"ses_x","slug":"ses_x","projectID":"p1","directory":"/workspace","title":"S","version":"1","time":{"created":1,"updated":2}}
         """.data(using: .utf8)!)
@@ -252,7 +252,7 @@ struct ContextUsageThroughputTests {
 
     @Test @MainActor
     func snapshotNilWithoutAnyCompletedStep() async throws {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         let session = try JSONDecoder().decode(Session.self, from: """
         {"id":"ses_x","slug":"ses_x","projectID":"p1","directory":"/workspace","title":"S","version":"1","time":{"created":1,"updated":2}}
         """.data(using: .utf8)!)

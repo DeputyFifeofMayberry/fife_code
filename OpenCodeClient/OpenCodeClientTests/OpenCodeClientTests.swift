@@ -51,27 +51,14 @@ struct OpenCodeClientTests {
     }
 
     @Test @MainActor func migrateLegacyDefaultServerAddress() {
-        let key = "serverURL"
-        let previous = UserDefaults.standard.string(forKey: key)
-        let previousProfiles = UserDefaults.standard.data(forKey: AppState.hostProfilesKey)
-        let previousProfileID = UserDefaults.standard.string(forKey: AppState.currentHostProfileIDKey)
-        defer {
-            if let previous {
-                UserDefaults.standard.set(previous, forKey: key)
-            } else {
-                UserDefaults.standard.removeObject(forKey: key)
-            }
-            if let previousProfiles { UserDefaults.standard.set(previousProfiles, forKey: AppState.hostProfilesKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.hostProfilesKey) }
-            if let previousProfileID { UserDefaults.standard.set(previousProfileID, forKey: AppState.currentHostProfileIDKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.currentHostProfileIDKey) }
-        }
-
-        UserDefaults.standard.removeObject(forKey: AppState.hostProfilesKey)
-        UserDefaults.standard.removeObject(forKey: AppState.currentHostProfileIDKey)
-        UserDefaults.standard.set("localhost:4096", forKey: key)
-        let state = AppState()
+        let key = AppState.serverURLKey
+        let standardBefore = UserDefaults.standard.string(forKey: key)
+        let defaults = makeIsolatedUserDefaults()
+        defaults.set("localhost:4096", forKey: key)
+        let state = makeIsolatedAppState(userDefaults: defaults)
         #expect(state.serverURL == "127.0.0.1:4096")
+        #expect(defaults.string(forKey: key) == "127.0.0.1:4096")
+        #expect(UserDefaults.standard.string(forKey: key) == standardBefore)
     }
 
     @Test func sessionDecoding() throws {
@@ -175,18 +162,15 @@ struct OpenCodeClientTests {
     }
 
     @Test @MainActor func carModeFeatureFlagDefaultsOffAndPersists() {
-        let previous = UserDefaults.standard.object(forKey: AppState.carModeEnabledKey)
-        UserDefaults.standard.removeObject(forKey: AppState.carModeEnabledKey)
-        defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: AppState.carModeEnabledKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.carModeEnabledKey) }
-        }
-
-        let initial = AppState()
+        let key = AppState.carModeEnabledKey
+        let standardBefore = UserDefaults.standard.object(forKey: key) as? Bool
+        let defaults = makeIsolatedUserDefaults()
+        let initial = makeIsolatedAppState(userDefaults: defaults)
         #expect(!initial.isCarModeEnabled)
 
         initial.isCarModeEnabled = true
-        #expect(AppState().isCarModeEnabled)
+        #expect(makeIsolatedAppState(userDefaults: defaults).isCarModeEnabled)
+        #expect(UserDefaults.standard.object(forKey: key) as? Bool == standardBefore)
     }
 
     @Test @MainActor func structuredSpeechFallsBackWhenAssistantHasNoTextPart() throws {

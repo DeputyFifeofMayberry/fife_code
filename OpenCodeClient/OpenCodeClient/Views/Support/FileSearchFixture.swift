@@ -49,10 +49,12 @@ enum FileSearchFixture {
     static func makeAppState() -> AppState {
         probe.findDirectories = []
         probe.contentDirectories = []
+        let defaults = UITestFixtures.isolatedDefaults(label: "file-search")
         return AppState(
             apiClient: StubClient(),
             sseClient: SSEClient(),
-            userDefaults: UserDefaults(suiteName: "opencode.uitest.file-search.\(UUID().uuidString)")!,
+            sshTunnelManager: SSHTunnelManager(defaults: defaults),
+            userDefaults: defaults,
             hostCredentialAccess: HostCredentialAccess(
                 save: { _, _ in },
                 load: { _ in nil },

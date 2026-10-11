@@ -7,8 +7,10 @@ struct UserDefaultsIsolationTests {
     @Test func shortlistDoesNotLeakAcrossUserDefaultsSuites() {
         let aDefaults = UserDefaults(suiteName: "opencode.tests.iso.a.\(UUID().uuidString)")!
         let bDefaults = UserDefaults(suiteName: "opencode.tests.iso.b.\(UUID().uuidString)")!
-        let a = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: aDefaults)
-        let b = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: bDefaults)
+        let a = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: aDefaults), userDefaults: aDefaults,
+            hostCredentialAccess: .noExternal)
+        let b = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: bDefaults), userDefaults: bDefaults,
+            hostCredentialAccess: .noExternal)
 
         a.addModelsToShortlist([
             ModelPreset(displayName: "GLM-5.3", providerID: "zai-coding-plan", modelID: "glm-5.3")
@@ -16,7 +18,8 @@ struct UserDefaultsIsolationTests {
         #expect(a.modelShortlist.map(\.id) == ["zai-coding-plan/glm-5.3"])
         #expect(b.modelShortlist.isEmpty)
 
-        let bReloaded = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: bDefaults)
+        let bReloaded = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: bDefaults), userDefaults: bDefaults,
+            hostCredentialAccess: .noExternal)
         #expect(bReloaded.modelShortlist.isEmpty)
     }
 }

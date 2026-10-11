@@ -17,14 +17,6 @@ struct CarModeFlowTests {
     }
 
     @Test @MainActor func submitCarTurnReusesScopedSessionAndSpeaksOnce() async throws {
-        let defaultsKey = AppState.carSessionsByContextKey
-        let oldValue = UserDefaults.standard.data(forKey: defaultsKey)
-        UserDefaults.standard.removeObject(forKey: defaultsKey)
-        defer {
-            if let oldValue { UserDefaults.standard.set(oldValue, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
-        }
-
         let api = MockAPIClient()
         let speech = MockCarSpeechOutput()
         let state = makeIsolatedAppState(
@@ -96,17 +88,6 @@ struct CarModeFlowTests {
     }
 
     @Test @MainActor func selectedProjectCanRestoreExistingCarSession() async throws {
-        let oldSelection = UserDefaults.standard.string(forKey: AppState.selectedProjectWorktreeKey)
-        let oldCarSessions = UserDefaults.standard.data(forKey: AppState.carSessionsByContextKey)
-        UserDefaults.standard.removeObject(forKey: AppState.selectedProjectWorktreeKey)
-        UserDefaults.standard.removeObject(forKey: AppState.carSessionsByContextKey)
-        defer {
-            if let oldSelection { UserDefaults.standard.set(oldSelection, forKey: AppState.selectedProjectWorktreeKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.selectedProjectWorktreeKey) }
-            if let oldCarSessions { UserDefaults.standard.set(oldCarSessions, forKey: AppState.carSessionsByContextKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.carSessionsByContextKey) }
-        }
-
         let api = MockAPIClient()
         let state = makeIsolatedAppState(apiClient: api)
         state.isConnected = true
@@ -177,11 +158,6 @@ struct CarModeFlowTests {
     }
 
     @Test @MainActor func selectedProjectCannotReuseServerDefaultCarSession() async {
-        let oldSelection = UserDefaults.standard.string(forKey: AppState.selectedProjectWorktreeKey)
-        defer {
-            if let oldSelection { UserDefaults.standard.set(oldSelection, forKey: AppState.selectedProjectWorktreeKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.selectedProjectWorktreeKey) }
-        }
         let api = MockAPIClient()
         let state = makeIsolatedAppState(apiClient: api)
         state.isConnected = true
@@ -196,15 +172,6 @@ struct CarModeFlowTests {
     }
 
     @Test @MainActor func failedStructuredResponseKeepsCarModeFailed() async throws {
-        let oldSelection = UserDefaults.standard.string(forKey: AppState.selectedProjectWorktreeKey)
-        let oldCarSessions = UserDefaults.standard.data(forKey: AppState.carSessionsByContextKey)
-        UserDefaults.standard.removeObject(forKey: AppState.carSessionsByContextKey)
-        defer {
-            if let oldSelection { UserDefaults.standard.set(oldSelection, forKey: AppState.selectedProjectWorktreeKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.selectedProjectWorktreeKey) }
-            if let oldCarSessions { UserDefaults.standard.set(oldCarSessions, forKey: AppState.carSessionsByContextKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.carSessionsByContextKey) }
-        }
         let api = MockAPIClient()
         let speech = MockCarSpeechOutput()
         let state = makeIsolatedAppState(
@@ -844,7 +811,7 @@ private final class CarHostHarness {
         state = AppState(
             apiClient: api,
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: defaults),
             carSpeechOutput: speech,
             clientCapabilityStore: ClientCapabilityCallbackStore(rootDirectory: storeRoot),
             userDefaults: defaults,

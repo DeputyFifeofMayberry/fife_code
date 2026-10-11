@@ -328,7 +328,7 @@ struct ModelSelectionPersistenceTests {
         if !selectedModels.isEmpty, let encoded = try? JSONEncoder().encode(selectedModels) {
             defaults.set(encoded, forKey: selectedModelDefaultsKey)
         }
-        let state = AppState(userDefaults: defaults)
+        let state = makeIsolatedAppState(userDefaults: defaults)
         if seedShortlist {
             state.addModelsToShortlist(testSeedPresets)
         }
@@ -419,7 +419,7 @@ struct ArchivedSessionTests {
     }
 
     @Test @MainActor func sortedSessionsIncludesArchivedSessions() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
 
         let s1 = makeSession(id: "s1", archived: nil)
         let s2 = makeSession(id: "s2", archived: 123)
@@ -429,7 +429,7 @@ struct ArchivedSessionTests {
     }
 
     @Test @MainActor func activeAndArchivedSessionFiltersUseArchivedTimestampSign() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.sessions = [
             makeSession(id: "active", title: "Active", archived: nil),
             makeSession(id: "restored", title: "Restored", archived: -1),
@@ -442,7 +442,7 @@ struct ArchivedSessionTests {
 
     @Test @MainActor func archiveAndRestoreSessionPatchArchivedTimestamp() async throws {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.sessions = [makeSession(id: "s1", title: "Session", archived: nil)]
 
         try await state.archiveSession(sessionID: "s1")
@@ -462,7 +462,7 @@ struct ArchivedSessionTests {
 
     @Test @MainActor func archiveParentSessionArchivesChildrenRecursively() async throws {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.sessions = [
             makeSession(id: "parent", title: "Parent", archived: nil),
             makeSession(id: "child-a", title: "Child A", parentID: "parent", archived: nil),
@@ -481,7 +481,7 @@ struct ArchivedSessionTests {
 
     @Test @MainActor func restoreParentSessionRestoresParentBeforeChildren() async throws {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.sessions = [
             makeSession(id: "parent", title: "Parent", archived: 123),
             makeSession(id: "child-a", title: "Child A", parentID: "parent", archived: 123),
@@ -498,7 +498,7 @@ struct ArchivedSessionTests {
 
     @Test @MainActor func sendingArchivedSessionRestoresBeforePrompt() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
         state.sessions = [makeSession(id: "s1", title: "Archived", archived: 123)]
 
@@ -531,26 +531,26 @@ struct ArchivedSessionTests {
 
 struct ProjectSelectionTests {
     @Test @MainActor func effectiveProjectDirectoryNilWhenNotSelected() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.selectedProjectWorktree = nil
         #expect(state.effectiveProjectDirectory == nil)
     }
 
     @Test @MainActor func effectiveProjectDirectoryReturnsSelectedWorktree() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.selectedProjectWorktree = "/Users/me/co/knowledge_working"
         #expect(state.effectiveProjectDirectory == "/Users/me/co/knowledge_working")
     }
 
     @Test @MainActor func effectiveProjectDirectoryCustomPathWhenCustomSelected() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.selectedProjectWorktree = AppState.customProjectSentinel
         state.customProjectPath = "/Users/me/custom/project"
         #expect(state.effectiveProjectDirectory == "/Users/me/custom/project")
     }
 
     @Test @MainActor func effectiveProjectDirectoryNilWhenCustomSelectedButEmpty() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.selectedProjectWorktree = AppState.customProjectSentinel
         state.customProjectPath = ""
         #expect(state.effectiveProjectDirectory == nil)
@@ -580,7 +580,7 @@ struct ForkSessionTests {
         let apiClient = MockAPIClient()
         let forked = Self.makeSession(id: "forked-s1", parentID: "s1", updated: 99)
         await apiClient.setForkSessionResult(forked)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
         state.sessions = [Self.makeSession(id: "s1", updated: 10)]
         state.currentSessionID = "s1"
@@ -599,7 +599,7 @@ struct ForkSessionTests {
         let apiClient = MockAPIClient()
         let forked = Self.makeSession(id: "forked-s2", parentID: "s2", updated: 50)
         await apiClient.setForkSessionResult(forked)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
         state.sessions = [Self.makeSession(id: "s2", updated: 5)]
         state.currentSessionID = "s2"
@@ -616,7 +616,7 @@ struct ForkSessionTests {
         let apiClient = MockAPIClient()
         let forked = Self.makeSession(id: "forked-s1", parentID: "s1", updated: 99)
         await apiClient.setForkSessionResult(forked)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
         state.sessions = [
             Self.makeSession(id: "forked-s1", parentID: "s1", updated: 50),
@@ -632,7 +632,7 @@ struct ForkSessionTests {
 
     @Test @MainActor func forkSessionDoesNothingWhenNotConnected() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = false
         state.currentSessionID = "s1"
 
@@ -644,7 +644,7 @@ struct ForkSessionTests {
 
     @Test @MainActor func forkSessionDoesNothingWhenNoCurrentSession() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
         state.currentSessionID = nil
 
@@ -657,7 +657,7 @@ struct ForkSessionTests {
     @Test @MainActor func forkSessionSetsConnectionErrorOnFailure() async {
         let apiClient = MockAPIClient()
         await apiClient.setForkSessionError(APIError.httpError(statusCode: 500, data: Data()))
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
         state.sessions = [Self.makeSession(id: "s1", updated: 1)]
         state.currentSessionID = "s1"
@@ -743,7 +743,7 @@ struct SessionTreeTests {
     }
 
     @Test @MainActor func sessionDescendantBusyCountsReadGlobalStatusMap() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.sessions = [
             makeSession(id: "root", parentID: nil, updated: 100),
             makeSession(id: "child", parentID: "root", updated: 90),
@@ -757,7 +757,7 @@ struct SessionTreeTests {
     }
 
     @Test @MainActor func runningDescendantSessionsReturnsBusyChildrenNewestFirst() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.sessions = [
             makeSession(id: "root", parentID: nil, updated: 100),
             makeSession(id: "older", parentID: "root", updated: 50),
@@ -774,7 +774,7 @@ struct SessionTreeTests {
     }
 
     @Test @MainActor func runningDescendantSessionsCoverGrandchildren() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.sessions = [
             makeSession(id: "root", parentID: nil, updated: 100),
             makeSession(id: "child", parentID: "root", updated: 90),
@@ -891,7 +891,7 @@ struct SessionTreeTests {
     }
 
     @Test @MainActor func sidebarSessionsHideChildrenAndSortRootsByUpdatedDesc() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.sessions = [
             makeSession(id: "root-old", updated: 50),
             makeSession(id: "child", parentID: "root-new", updated: 120),
@@ -902,7 +902,7 @@ struct SessionTreeTests {
     }
 
     @Test @MainActor func sessionTreeRemainsCanonicalListWhenSidebarSessionsHideChildren() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.sessions = [
             makeSession(id: "root", updated: 100),
             makeSession(id: "child", parentID: "root", updated: 90),
@@ -920,7 +920,7 @@ struct SessionTreeTests {
     }
 
     @Test @MainActor func sessionTreeIncludesActiveAndArchivedSessions() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.sessions = [
             makeSession(id: "active-root", updated: 100),
             makeSession(id: "active-child", parentID: "active-root", updated: 90),
@@ -937,7 +937,7 @@ struct SessionTreeTests {
     }
 
     @Test @MainActor func toggleSessionExpandedAddsAndRemovesSessionID() {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         #expect(state.expandedSessionIDs.isEmpty)
         state.toggleSessionExpanded("s1")
         #expect(state.expandedSessionIDs.contains("s1"))
@@ -1018,7 +1018,7 @@ struct AppStateFlowTests {
         let children = [FileNode(name: "main.swift", path: "src/main.swift", absolute: nil, type: "file", ignored: false)]
         await apiClient.setFileListResult(root, forPath: "")
 
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.expandedPaths = ["src"]
         state.fileChildrenCache = ["src": children]
 
@@ -1031,7 +1031,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func loadFileTreeUsesSelectedProjectDirectory() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.selectedProjectWorktree = "/tmp/target"
 
         await state.loadFileTree()
@@ -1047,7 +1047,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func testConnectionConfiguresInjectedClient() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.configure(serverURL: "https://example.com:4096", username: "alice", password: "secret")
 
         await state.testConnection()
@@ -1062,7 +1062,7 @@ struct AppStateFlowTests {
     @Test @MainActor func testConnectionReportsHealthFailure() async {
         let apiClient = MockAPIClient()
         await apiClient.setHealthError(APIError.invalidURL)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.configure(serverURL: "127.0.0.1:4096")
 
         await state.testConnection()
@@ -1073,7 +1073,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func loadFileContentUsesDirectoryQueryForExternalHostPath() async throws {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.sessions = [
             Self.makeSession(id: "s1", updated: 1, directory: "/Users/grapeot/co/knowledge_working")
         ]
@@ -1095,7 +1095,7 @@ struct AppStateFlowTests {
             Self.makeSession(id: "s-new", updated: 20),
             Self.makeSession(id: "s-old", updated: 10),
         ])
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
         state.currentSessionID = nil
 
@@ -1122,7 +1122,7 @@ struct AppStateFlowTests {
             Self.makeSession(id: "root-1", updated: 100),
         ] + secondPageChildren, forLimit: 800)
 
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
 
         await state.loadSessions()
@@ -1157,7 +1157,7 @@ struct AppStateFlowTests {
             Self.makeSession(id: "grandchild-1", parentID: "child-1", updated: 90),
         ] + fillerChildren, forLimit: 800)
 
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
 
         await state.loadSessions()
@@ -1180,7 +1180,7 @@ struct AppStateFlowTests {
     @Test @MainActor func createSessionAppendsNewCurrentSession() async {
         let apiClient = MockAPIClient()
         await apiClient.setCreateSessionResult(Self.makeSession(id: "created", updated: 30))
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
         state.sessions = [Self.makeSession(id: "existing", updated: 10)]
         state.messages = [Self.makeMessageRow(messageID: "m1", sessionID: "existing", text: "old")]
@@ -1198,7 +1198,7 @@ struct AppStateFlowTests {
         let apiClient = MockAPIClient()
         let created = Self.makeSession(id: "created", updated: 30, title: "Created")
         await apiClient.setCreateSessionResult(created)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
         state.sessions = [
             Self.makeSession(id: "created", updated: 20, title: "Old Created"),
@@ -1215,7 +1215,7 @@ struct AppStateFlowTests {
     @Test @MainActor func sendMessageKeepsOptimisticRowAndMarksSendFailureInlineOnFailure() async {
         let apiClient = MockAPIClient()
         await apiClient.setPromptError(APIError.invalidURL)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         let succeeded = await state.sendMessage("hello")
@@ -1232,7 +1232,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sendMessageUsesDeterministicMessageIDSharedWithServer() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         _ = await state.sendMessage("hello")
@@ -1248,7 +1248,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func serverTextPartDropsTempPlaceholderAfterUserInfoUntracksRow() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         let tempMessageID = state.appendOptimisticUserMessage("spoke sentence")
@@ -1277,7 +1277,7 @@ struct AppStateFlowTests {
         let apiClient = MockAPIClient()
         let loaded = [Self.makeMessageRow(messageID: "m1", sessionID: "s1", text: "hi")]
         await apiClient.setMessagesResult(loaded)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.loadMessages()
@@ -1288,7 +1288,7 @@ struct AppStateFlowTests {
     }
 
     @Test @MainActor func appendOptimisticUserMessageIncludesImageAttachmentPart() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
         state.currentSessionID = "s1"
         let attachment = Self.makeAttachment(filename: "photo.jpg")
 
@@ -1303,7 +1303,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sendMessagePassesImageAttachmentsToAPI() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
         let attachment = Self.makeAttachment(filename: "photo.jpg")
 
@@ -1339,7 +1339,7 @@ struct AppStateFlowTests {
             Self.makeMessageRow(messageID: "msg-1", sessionID: "s1", role: "user", text: "first"),
             Self.makeMessageRow(messageID: "msg-2", sessionID: "s1", role: "assistant", text: "reply"),
         ])
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
         state.sessions = [Self.makeSession(id: "s1", updated: 10)]
         state.currentSessionID = "s1"
@@ -1364,7 +1364,7 @@ struct AppStateFlowTests {
     @Test @MainActor func editFromMessageKeepsDraftUnchangedOnFailure() async {
         let apiClient = MockAPIClient()
         await apiClient.setRevertSessionError(APIError.invalidURL)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.isConnected = true
         state.sessions = [Self.makeSession(id: "s1", updated: 10)]
         state.currentSessionID = "s1"
@@ -1391,7 +1391,7 @@ struct AppStateFlowTests {
         }
         await apiClient.setMessagesResult(firstPage, forLimit: 20)
         await apiClient.setMessagesResult(expandedPage, forLimit: 40)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.loadMessages()
@@ -1410,7 +1410,7 @@ struct AppStateFlowTests {
             Self.makeMessageRow(messageID: "m\(index)", sessionID: "s1", text: "message \(index)")
         }
         await apiClient.setMessagesResult(firstPage, forLimit: 20)
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.loadMessages()
@@ -1436,7 +1436,7 @@ struct AppStateFlowTests {
             ),
             Self.makeMessageRow(messageID: "m-assistant", sessionID: "s1", text: "reply")
         ])
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         // Server-side text rewrites (plugin prefixes, whitespace) are
@@ -1455,7 +1455,7 @@ struct AppStateFlowTests {
         await apiClient.setMessagesResult([
             Self.makeMessageRow(messageID: "m-assistant", sessionID: "s1", text: "older reply")
         ])
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
         // Idle session: with deterministic ids the pending row survives until
         // its id shows up server-side, regardless of session busy state.
@@ -1490,7 +1490,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sessionErrorIgnoresOtherSessions() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
         let pendingID = state.appendOptimisticUserMessage("hello", messageID: "msg_pending")
 
@@ -1505,7 +1505,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sessionErrorWithoutPendingRowStillReloads() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -1525,7 +1525,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messageUpdatedIgnoresOtherSession() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -1538,7 +1538,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messageUpdatedWithFullInfoUpsertsWithoutREST() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -1560,7 +1560,7 @@ struct AppStateFlowTests {
         let apiClient = MockAPIClient()
         await apiClient.setMessagesResult([Self.makeMessageRow(messageID: "m1", sessionID: "s1", text: "Final")])
         await apiClient.setSessionDiffResult([Self.makeDiff(file: "Sources/MessageStore.swift")])
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -1576,7 +1576,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sessionUpdatedSkipsProjectMismatchForNonCurrentSession() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.selectedProjectWorktree = "/project/a"
         state.currentSessionID = "s-current"
         state.sessions = [Self.makeSession(id: "s-current", updated: 10, directory: "/project/a", title: "Current")]
@@ -1592,7 +1592,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sessionUpdatedUsesServerDefaultProjectScope() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.selectedProjectWorktree = nil
         state.serverCurrentProjectWorktree = "/project/a"
         state.sessions = [Self.makeSession(id: "s-current", updated: 10, directory: "/project/a", title: "Current")]
@@ -1635,7 +1635,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sessionUpdatedDoesNotInsertUnknownProjectBeforeDefaultLoads() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.selectedProjectWorktree = nil
         state.serverCurrentProjectWorktree = nil
         state.sessions = [Self.makeSession(id: "s-known", updated: 10, directory: "/project/a", title: "Known")]
@@ -1649,7 +1649,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sessionUpdatedStillAppliesToCurrentSessionAcrossProjectMismatch() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.selectedProjectWorktree = "/project/a"
         state.currentSessionID = "s-current"
         state.sessions = [Self.makeSession(id: "s-current", updated: 10, directory: "/project/a", title: "Old Title")]
@@ -1666,7 +1666,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sessionUpdatedCollapsesDuplicateSessionEntries() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.selectedProjectWorktree = nil
         state.currentSessionID = "s-current"
         state.sessions = [
@@ -1686,7 +1686,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sessionUpdatedNoOpsWhenPayloadIsUnchanged() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         let current = Self.makeSession(id: "s-current", updated: 10, title: "Current")
         state.sessions = [
             current,
@@ -1702,7 +1702,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messagePartUpdatedFullToolPartUpsertsShellRowWithoutREST() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -1728,7 +1728,7 @@ struct AppStateFlowTests {
         let apiClient = MockAPIClient()
         await apiClient.setMessagesResult([Self.makeMessageRow(messageID: "m1", sessionID: "s1", text: "Final")])
         await apiClient.setSessionDiffResult([Self.makeDiff(file: "Sources/AppState.swift")])
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -1744,7 +1744,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messagePartUpdatedIgnoresNonCurrentSession() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -1759,7 +1759,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sessionStatusIdleRecordsIdleForCurrentSession() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -1777,7 +1777,8 @@ struct AppStateFlowTests {
         let apiClient = MockAPIClient()
         // Isolated defaults: stepTimings persist across store recreation, so
         // shared .standard would leak entries between suites.
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: UserDefaults(suiteName: "opencode.tests.steptiming.\(UUID().uuidString)")!)
+        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: UserDefaults(suiteName: "opencode.tests.steptiming.\(UUID().uuidString)")!), userDefaults: UserDefaults(suiteName: "opencode.tests.steptiming.\(UUID().uuidString)")!,
+            hostCredentialAccess: .noExternal)
         state.currentSessionID = "s1"
 
         // Step start: assistant message.created.
@@ -1835,7 +1836,8 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sseToolCallOnlyStepGetsDecodingWindow() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: UserDefaults(suiteName: "opencode.tests.steptiming.\(UUID().uuidString)")!)
+        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: UserDefaults(suiteName: "opencode.tests.steptiming.\(UUID().uuidString)")!), userDefaults: UserDefaults(suiteName: "opencode.tests.steptiming.\(UUID().uuidString)")!,
+            hostCredentialAccess: .noExternal)
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -1873,7 +1875,8 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sseStepTimingIgnoresNonCurrentSession() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: UserDefaults(suiteName: "opencode.tests.steptiming.\(UUID().uuidString)")!)
+        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: UserDefaults(suiteName: "opencode.tests.steptiming.\(UUID().uuidString)")!), userDefaults: UserDefaults(suiteName: "opencode.tests.steptiming.\(UUID().uuidString)")!,
+            hostCredentialAccess: .noExternal)
         state.currentSessionID = "s1"
 
         // A full step for a NON-current session: part created + text delta.
@@ -1891,7 +1894,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messagePartUpdatedToolPartStatusSequenceUpdatesLocalState() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -1917,7 +1920,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messagePartDeltaAppendsStreamingTextInPlace() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         // Step start: the assistant message row exists before any part.
@@ -1948,7 +1951,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messagePartUpdatedPartBeforeMessageInfoFillsShellRow() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         // Assistant-only part arrives before the message row (reconnect
@@ -1979,7 +1982,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messagePartUpdatedReplayIsIdempotent() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         let frame = Self.makeSSEEvent("""
@@ -1996,7 +1999,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messagePartAndMessageRemovedEventsApplyLocally() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -2019,7 +2022,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messageRemovedEventIgnoresOtherSession() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
         _ = state.appendOptimisticUserMessage("hi", messageID: "m-keep")
 
@@ -2033,7 +2036,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messagePartUpdatedForPendingOptimisticRowReplacesTempParts() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         _ = state.appendOptimisticUserMessage("hello", messageID: "msg_abc")
@@ -2054,7 +2057,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func messageUpdatedForUserMessageUntracksPendingOptimisticRow() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         _ = state.appendOptimisticUserMessage("hello", messageID: "msg_abc")
@@ -2075,7 +2078,7 @@ struct AppStateFlowTests {
         let apiClient = MockAPIClient()
         await apiClient.setMessagesResult([Self.makeMessageRow(messageID: "m1", sessionID: "s1", text: "x")])
         await apiClient.setSessionDiffResult([Self.makeDiff(file: "Sources/AppState.swift")])
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
 
         state.sseLastFrameAt = Date().addingTimeInterval(-30)
@@ -2092,7 +2095,7 @@ struct AppStateFlowTests {
 
     @Test @MainActor func sseWatchdogNoOpsWhenStreamIsFresh() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.currentSessionID = "s1"
         state.sseLastFrameAt = Date()
 
@@ -2104,7 +2107,7 @@ struct AppStateFlowTests {
     @Test @MainActor func deleteCurrentSessionSelectsNextMostRecentSession() async throws {
         let apiClient = MockAPIClient()
         await apiClient.setMessagesResult([Self.makeMessageRow(messageID: "m-next", sessionID: "next", text: "next")])
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: apiClient, sseClient: MockSSEClient())
         state.sessions = [
             Self.makeSession(id: "current", updated: 10),
             Self.makeSession(id: "next", updated: 20),
