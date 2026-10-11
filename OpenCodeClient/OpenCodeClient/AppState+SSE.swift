@@ -237,7 +237,9 @@ extension AppState {
             }
         case "message.updated":
             let eventSessionID = props["sessionID"]?.value as? String
-            if Self.shouldProcessMessageEvent(eventSessionID: eventSessionID, currentSessionID: currentSessionID) {
+            if let eventSessionID, eventSessionID != currentSessionID {
+                acknowledgeOffscreenOutboundUser(properties: props, sessionID: eventSessionID)
+            } else if Self.shouldProcessMessageEvent(eventSessionID: eventSessionID, currentSessionID: currentSessionID) {
                 if let infoObj = props["info"]?.value as? [String: Any],
                     let role = infoObj["role"] as? String,
                     let id = infoObj["id"] as? String,
@@ -343,9 +345,16 @@ extension AppState {
             }
         case "message.removed":
             if let sessionID = props["sessionID"]?.value as? String,
-               sessionID == currentSessionID,
                let messageID = props["messageID"]?.value as? String {
-                messageStore.removeMessageRow(messageID: messageID)
+                if sessionID == currentSessionID {
+                    messageStore.removeMessageRow(messageID: messageID)
+                } else {
+                    messageStore.removeOutboundSendIfMatches(
+                        messageID: messageID,
+                        hostProfileID: currentHostProfileID,
+                        sessionID: sessionID
+                    )
+                }
             }
         case "server.heartbeat":
             // Explicit no-op: the liveness timestamp is stamped at the
@@ -376,14 +385,24 @@ extension AppState {
             }
         case "session.error":
             let eventSessionID = props["sessionID"]?.value as? String
-            if Self.shouldProcessMessageEvent(eventSessionID: eventSessionID, currentSessionID: currentSessionID) {
-                // prompt_async acknowledges with 204 before the turn runs, so
-                // an async failure only surfaces through this event. Mark the
-                // still-pending optimistic row as failed (inline banner, no
-                // alert) and reconcile; turns that already persisted an
-                // assistant row surface their error through that row instead.
-                let reason = Self.sessionErrorDisplayReason(properties: props)
-                if let pendingID = messageStore.pendingOptimisticMessageIDs.min() {
+            let reason = Self.sessionErrorDisplayReason(properties: props)
+            if let eventSessionID {
+                if let pendingID = messageStore.oldestPendingOutboundID(
+                    hostProfileID: currentHostProfileID,
+                    sessionID: eventSessionID
+                ) {
+                    messageStore.markSendFailed(messageID: pendingID, reason: reason)
+                    messageStore.untrackPendingOptimisticMessages([pendingID])
+                }
+                if eventSessionID == currentSessionID {
+                    await loadMessages()
+                }
+            } else if Self.shouldProcessMessageEvent(eventSessionID: nil, currentSessionID: currentSessionID) {
+                if let failedSessionID = currentSessionID,
+                   let pendingID = messageStore.oldestPendingOutboundID(
+                    hostProfileID: currentHostProfileID,
+                    sessionID: failedSessionID
+                   ) {
                     messageStore.markSendFailed(messageID: pendingID, reason: reason)
                     messageStore.untrackPendingOptimisticMessages([pendingID])
                 }
@@ -392,6 +411,20 @@ extension AppState {
         default:
             break
         }
+    }
+
+    func acknowledgeOffscreenOutboundUser(properties: [String: AnyCodable], sessionID: String) {
+        guard let infoObj = properties["info"]?.value as? [String: Any],
+              JSONSerialization.isValidJSONObject(infoObj),
+              let data = try? JSONSerialization.data(withJSONObject: infoObj),
+              let info = try? JSONDecoder().decode(Message.self, from: data),
+              info.isUser,
+              info.sessionID == sessionID else { return }
+        messageStore.acknowledgeOutboundSend(
+            messageID: info.id,
+            hostProfileID: currentHostProfileID,
+            sessionID: sessionID
+        )
     }
 
     /// Builds a short inline-banner reason from a session.error payload
@@ -544,10 +577,11 @@ extension AppState {
         removeHostPreference(sessionID: sessionID)
     }
 
-    func noteConfirmedMissingSession(_ sessionID: String, clearSelection: Bool) {
+    func noteConfirmedMissingSession(_ sessionID: String, hostProfileID: UUID, clearSelection: Bool) {
         sessionScope.confirmedMissingSessionIDs.insert(sessionID)
         sessions.removeAll { $0.id == sessionID }
         clearSessionScopedCaches(sessionID: sessionID)
+        messageStore.removeOutboundSends(hostProfileID: hostProfileID, sessionID: sessionID)
         guard clearSelection, currentSessionID == sessionID else { return }
         clearCurrentSessionViewState()
         currentSessionID = nil
@@ -607,8 +641,9 @@ extension AppState {
     }
 
     func handleRemoteSessionDeleted(sessionID: String) async {
+        let sourceHostID = currentHostProfileID
         let deletedCurrentSession = (sessionID == currentSessionID)
-        noteConfirmedMissingSession(sessionID, clearSelection: deletedCurrentSession)
+        noteConfirmedMissingSession(sessionID, hostProfileID: sourceHostID, clearSelection: deletedCurrentSession)
         await loadSessions()
 
         if currentSessionID == nil || currentSessionID == sessionID {

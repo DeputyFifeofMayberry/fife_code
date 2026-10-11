@@ -406,11 +406,16 @@ extension AppState {
 
     func deleteSession(sessionID: String) async throws {
         let selectionAtStart = currentSessionID
+        let sourceHost = captureHostRequestSnapshot()
         try await apiClient.deleteSession(sessionID: sessionID)
+        guard isCurrentHostRequest(sourceHost) else {
+            messageStore.removeOutboundSends(hostProfileID: sourceHost.hostProfileID, sessionID: sessionID)
+            return
+        }
 
         let selectionIsDeletedTarget = currentSessionID == sessionID
         let mayNavigateToReplacement = selectionAtStart == sessionID && selectionIsDeletedTarget
-        noteConfirmedMissingSession(sessionID, clearSelection: selectionIsDeletedTarget)
+        noteConfirmedMissingSession(sessionID, hostProfileID: sourceHost.hostProfileID, clearSelection: selectionIsDeletedTarget)
         guard mayNavigateToReplacement else { return }
 
         guard let nextSessionID = Self.nextSessionIDAfterDeleting(
@@ -444,8 +449,12 @@ extension AppState {
     }
 
     func restoreSession(sessionID: String) async throws {
+        let host = captureHostRequestSnapshot()
         for id in sessionSubtreeIDs(rootedAt: sessionID, parentFirst: true) {
+            guard isCurrentHostRequest(host) else { return }
             let updated = try await apiClient.updateSessionArchived(sessionID: id, archived: -1)
+            guard isCurrentHostRequest(host) else { return }
+            guard !sessionScope.confirmedMissingSessionIDs.contains(id) else { return }
             upsertSession(updated)
         }
     }

@@ -340,6 +340,7 @@ extension AppState {
             }
         }
         hostProfiles.removeAll { $0.id == profile.id }
+        messageStore.removeOutboundSends(hostProfileID: profile.id)
         if wasCurrent, let first = hostProfiles.first {
             beginHostTransportTransition(to: first.id)
         }

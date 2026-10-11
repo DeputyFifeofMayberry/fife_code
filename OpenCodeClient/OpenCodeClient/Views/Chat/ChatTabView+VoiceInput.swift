@@ -137,7 +137,7 @@ extension ChatTabView {
             completedSpeechDraftByOwner[owner] = route.sourceDraftText
         }
         if let currentComposerText = route.currentComposerText {
-            inputText = currentComposerText
+            composerInputBinding.wrappedValue = currentComposerText
         }
     }
 
@@ -239,7 +239,7 @@ extension ChatTabView {
                                   prefix: recordingInputPrefix,
                                   transcript: transcript
                               ) else { return }
-                        inputText = liveInput
+                        composerInputBinding.wrappedValue = liveInput
                     }
                 }
             }
@@ -438,7 +438,7 @@ extension ChatTabView {
                             originatingSessionID: originSessionID,
                             currentSessionID: state.currentSessionID
                         ), ownsSpeechSession(session, sourceSessionID: originSessionID) else { return }
-                        inputText = Self.mergedSpeechInput(prefix: prefix, transcript: partial)
+                        composerInputBinding.wrappedValue = Self.mergedSpeechInput(prefix: prefix, transcript: partial)
                     }
                 }
                 let cleaned = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -708,7 +708,7 @@ extension ChatTabView {
                             originatingSessionID: retrySessionID,
                             currentSessionID: state.currentSessionID
                         ), speechRetrySessionID == retrySessionID else { return }
-                        inputText = Self.mergedSpeechInput(prefix: prefix, transcript: partial)
+                        composerInputBinding.wrappedValue = Self.mergedSpeechInput(prefix: prefix, transcript: partial)
                     }
                 }
             }
@@ -722,7 +722,7 @@ extension ChatTabView {
             speechRetryID = nil
             speechRetrySessionID = nil
             isRetryingSpeech = false
-            inputText = Self.mergedSpeechInput(prefix: prefix, transcript: transcript)
+            composerInputBinding.wrappedValue = Self.mergedSpeechInput(prefix: prefix, transcript: transcript)
             clearPreservedSpeechAudio(for: owner)
         } catch {
             partialTranscriptBuffer.close()
