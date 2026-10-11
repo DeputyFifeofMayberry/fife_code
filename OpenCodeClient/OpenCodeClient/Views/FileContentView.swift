@@ -51,6 +51,8 @@ struct FileContentView: View {
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var previewMode: MarkdownPreviewMode = .web
+    @State private var refreshGeneration: UInt64 = 0
+    @State private var activeLoadKey: FileContentLoadKey?
 
     private var isImage: Bool {
         ImageFileUtils.isImage(filePath)
@@ -72,7 +74,7 @@ struct FileContentView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Button {
-                loadContent()
+                bumpRefresh()
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
@@ -85,6 +87,7 @@ struct FileContentView: View {
                 ShareLink(item: content, subject: Text(fileName)) {
                     Image(systemName: "square.and.arrow.up")
                 }
+                .accessibilityIdentifier("file-content-share")
             }
         }
         if let imageData, let uiImage = UIImage(data: imageData) {
@@ -118,36 +121,46 @@ struct FileContentView: View {
             if isLoading {
                 ProgressView(L10n.t(.appLoading))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("file-content-loading")
+                    .refreshable { bumpRefresh() }
             } else if let err = loadError {
                 ContentUnavailableView(L10n.t(.appError), systemImage: "exclamationmark.triangle", description: Text(err))
+                    .accessibilityIdentifier("file-content-error")
+                    .refreshable { bumpRefresh() }
             } else if let data = imageData, let uiImage = UIImage(data: data) {
                 ImageView(uiImage: uiImage)
+                    .refreshable { bumpRefresh() }
             } else if let text = content {
                 contentView(text: text)
+                    .accessibilityIdentifier("file-content-body")
             } else {
                 ContentUnavailableView(L10n.t(.appNoContent), systemImage: "doc.text")
+                    .refreshable { bumpRefresh() }
             }
         }
         .navigationTitle(fileName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         .toolbarBackground(.visible, for: .navigationBar)
-        .onAppear {
-            loadContent()
+        .accessibilityIdentifier("file-content-screen")
+        .task(id: loadKey) {
+            let key = loadKey
+            activeLoadKey = key
+            await loadContent(key)
         }
-        // SwiftUI 复用同一 FileContentView 实例时,.onAppear 只触发一次,
-        // 后续 filePath 变化 (iPad 中间预览栏切文件、navigationDestination 切 path)
-        // 不会重新加载内容 — 老 content 留在屏上,需要手动点刷新。
-        // 在 path 变化时主动 reset + reload 避免这个状态泄漏。
-        .onChange(of: filePath) { _, _ in
-            content = nil
-            imageData = nil
-            loadError = nil
-            loadContent()
-        }
-        .refreshable {
-            loadContent()
-        }
+    }
+
+    private func bumpRefresh() {
+        refreshGeneration &+= 1
+    }
+
+    private var loadKey: FileContentLoadKey {
+        FileContentLoadKey.current(
+            state: state,
+            path: filePath,
+            workspaceDirectory: effectiveWorkspaceDirectory,
+            revision: refreshGeneration
+        )
     }
 
     /// MarkdownUI crashes/freezes on long lines or large content. Skip it entirely for problematic files.
@@ -166,13 +179,14 @@ struct FileContentView: View {
             case .native:
                 if useRaw {
                     // MarkdownUI can freeze on long lines / large content: degrade to source.
-                    RawTextView(text: text, monospaced: false)
+                    RawTextView(text: text, monospaced: false, onRefresh: bumpRefresh)
                 } else {
                     MarkdownPreviewView(
                         text: text,
                         state: state,
                         markdownFilePath: filePath,
-                        workspaceDirectory: effectiveWorkspaceDirectory
+                        workspaceDirectory: effectiveWorkspaceDirectory,
+                        onRefresh: bumpRefresh
                     )
                 }
             case .web:
@@ -185,54 +199,73 @@ struct FileContentView: View {
                     onSwitchToNative: { previewMode = .native },
                     onSwitchToSource: { previewMode = .source }
                 )
+                .refreshable { bumpRefresh() }
             case .source:
-                RawTextView(text: text, monospaced: true)
+                RawTextView(text: text, monospaced: true, onRefresh: bumpRefresh)
             }
         } else {
-            CodeView(text: text, path: filePath)
+            CodeView(text: text, path: filePath, onRefresh: bumpRefresh)
         }
     }
 
-    private func loadContent() {
+    private func loadContent(_ key: FileContentLoadKey) async {
+        guard activeLoadKey == key else { return }
         isLoading = true
         loadError = nil
         imageData = nil
         content = nil
-        Task {
-            do {
-                let fc = try await state.loadFileContent(path: filePath, workspaceDirectory: effectiveWorkspaceDirectory)
-                await MainActor.run {
-                    if isImage {
-                        if let rawContent = fc.content {
-                            if let data = Data(base64Encoded: rawContent), UIImage(data: data) != nil {
-                                imageData = data
-                            } else {
-                                let cleaned = rawContent
-                                    .replacingOccurrences(of: "\n", with: "")
-                                    .replacingOccurrences(of: "\r", with: "")
-                                    .replacingOccurrences(of: " ", with: "")
-                                if let data = Data(base64Encoded: cleaned), UIImage(data: data) != nil {
-                                    imageData = data
-                                } else {
-                                    loadError = L10n.t(.contentImageDecodeFailed)
-                                }
-                            }
-                        } else {
-                            loadError = L10n.t(.contentNoImageData)
-                        }
-                    } else if let text = fc.text {
-                        content = text
-                    } else if fc.content != nil, fc.type == "binary" {
-                        loadError = L10n.t(.fileBinary)
+        let fetched: Result<FileContent, Error>
+        do {
+            fetched = .success(try await state.loadFileContent(path: key.path, workspaceDirectory: key.workspaceDirectory))
+        } catch {
+            fetched = .failure(error)
+        }
+        guard !Task.isCancelled, activeLoadKey == key else { return }
+        switch fetched {
+        case .failure(let error):
+            guard !(error is CancellationError) else { return }
+            content = nil
+            imageData = nil
+            loadError = error.localizedDescription
+        case .success(let fc):
+            applyLoaded(fc, path: key.path)
+        }
+        isLoading = false
+    }
+
+    private func applyLoaded(_ fc: FileContent, path: String) {
+        loadError = nil
+        if ImageFileUtils.isImage(path) {
+            content = nil
+            if let rawContent = fc.content {
+                if let data = Data(base64Encoded: rawContent), UIImage(data: data) != nil {
+                    imageData = data
+                } else {
+                    let cleaned = rawContent
+                        .replacingOccurrences(of: "\n", with: "")
+                        .replacingOccurrences(of: "\r", with: "")
+                        .replacingOccurrences(of: " ", with: "")
+                    if let data = Data(base64Encoded: cleaned), UIImage(data: data) != nil {
+                        imageData = data
+                    } else {
+                        imageData = nil
+                        loadError = L10n.t(.contentImageDecodeFailed)
                     }
-                    isLoading = false
                 }
-            } catch {
-                await MainActor.run {
-                    loadError = error.localizedDescription
-                    isLoading = false
-                }
+            } else {
+                imageData = nil
+                loadError = L10n.t(.contentNoImageData)
             }
+        } else if let text = fc.text {
+            imageData = nil
+            content = text
+        } else if fc.content != nil, fc.type == "binary" {
+            content = nil
+            imageData = nil
+            loadError = L10n.t(.fileBinary)
+        } else {
+            content = nil
+            imageData = nil
         }
     }
 }
@@ -241,14 +274,19 @@ struct FileContentView: View {
 struct CodeView: View {
     let text: String
     let path: String
+    var onRefresh: (() -> Void)? = nil
 
     private var lines: [String] {
         text.components(separatedBy: .newlines)
     }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
-            ScrollView(.vertical, showsIndicators: true) {
+        scrolling
+    }
+
+    private var scrolling: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            ScrollView(.horizontal, showsIndicators: true) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
                         HStack(alignment: .top, spacing: DesignSpacing.sm) {
@@ -269,6 +307,19 @@ struct CodeView: View {
                 .frame(minWidth: 400, alignment: .leading)
             }
         }
+        .modifier(VerticalRefresh(action: onRefresh))
+    }
+}
+
+private struct VerticalRefresh: ViewModifier {
+    var action: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        if let action {
+            content.refreshable { action() }
+        } else {
+            content
+        }
     }
 }
 
@@ -279,6 +330,7 @@ struct MarkdownPreviewView: View {
     let state: AppState
     let markdownFilePath: String?
     let workspaceDirectory: String?
+    var onRefresh: (() -> Void)? = nil
     @State private var resolvedPreviewText: String?
 
     private static let maxLineLength = 5000
@@ -351,6 +403,7 @@ struct MarkdownPreviewView: View {
             }
             .padding()
         }
+        .modifier(VerticalRefresh(action: onRefresh))
         .task(id: "\(markdownFilePath ?? ""):\(previewText.hashValue)") {
             guard !useRawTextFallback else { return }
             resolvedPreviewText = nil
@@ -371,6 +424,7 @@ struct MarkdownPreviewView: View {
 struct RawTextView: View {
     let text: String
     var monospaced: Bool = false
+    var onRefresh: (() -> Void)? = nil
 
     var body: some View {
         ScrollView {
@@ -380,6 +434,7 @@ struct RawTextView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
         }
+        .modifier(VerticalRefresh(action: onRefresh))
     }
 }
 

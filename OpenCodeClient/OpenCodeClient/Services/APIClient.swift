@@ -566,13 +566,18 @@ actor APIClient {
     }
 
     func findFile(query: String, limit: Int = 50) async throws -> [String] {
-        let (data, _) = try await makeRequest(
-            path: "/find/file",
-            queryItems: [
-                URLQueryItem(name: "query", value: query),
-                URLQueryItem(name: "limit", value: String(limit)),
-            ]
-        )
+        try await findFile(query: query, limit: limit, directory: nil)
+    }
+
+    func findFile(query: String, limit: Int, directory: String?) async throws -> [String] {
+        var queryItems = [
+            URLQueryItem(name: "query", value: query),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        if let directory, !directory.isEmpty {
+            queryItems.append(URLQueryItem(name: "directory", value: directory))
+        }
+        let (data, _) = try await makeRequest(path: "/find/file", queryItems: queryItems)
         return try JSONDecoder().decode([String].self, from: data)
     }
 
@@ -968,6 +973,12 @@ protocol APIClientProtocol: Actor {
 }
 
 extension APIClient: APIClientProtocol {}
+
+protocol FileDirectorySearching: APIClientProtocol {
+    func findFile(query: String, limit: Int, directory: String?) async throws -> [String]
+}
+
+extension APIClient: FileDirectorySearching {}
 
 extension APIClientProtocol {
     func promptStructured(

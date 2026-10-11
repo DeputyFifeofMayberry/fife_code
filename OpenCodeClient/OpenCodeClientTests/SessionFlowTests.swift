@@ -1604,6 +1604,35 @@ struct AppStateFlowTests {
         #expect(state.sessions.map(\.id) == ["s-current"])
     }
 
+    @Test @MainActor func lookupFailureClearsServerDefaultAndAppliesLoadedSessionUpdate() async {
+        let apiClient = MockAPIClient()
+        let b1 = Self.makeSession(id: "b1", updated: 10, directory: "/workspace/b", title: "B1")
+        let b2 = Self.makeSession(id: "b2", updated: 9, directory: "/workspace/b", title: "B2")
+        await apiClient.setSessionsResult([b1, b2])
+        await apiClient.setProjectCurrentError(APIError.httpError(statusCode: 503, data: Data()))
+        let state = makeIsolatedAppState(apiClient: apiClient)
+        state.isConnected = true
+        state.serverCurrentProjectWorktree = "/workspace/a"
+
+        await state.loadProjects()
+        await state.loadSessions()
+
+        #expect(state.serverCurrentProjectWorktree == nil)
+        #expect(state.effectiveProjectDirectory == nil)
+        #expect(state.currentSessionID == "b1")
+        #expect(state.sessions.map(\.id) == ["b1", "b2"])
+        #expect(state.carActiveTurnID == nil)
+
+        await state.applySSEEventForTesting(Self.makeSSEEvent("""
+        {"payload":{"type":"session.updated","properties":{"session":{"id":"b2","slug":"b2","projectID":"p1","directory":"/workspace/b","parentID":null,"title":"B2 renamed","version":"1","time":{"created":0,"updated":30},"share":null,"summary":null}}}}
+        """))
+
+        #expect(state.sessions.map(\.id) == ["b1", "b2"])
+        #expect(state.sessions.first?.title == "B1")
+        #expect(state.sessions.last?.title == "B2 renamed")
+        #expect(state.currentSessionID == "b1")
+    }
+
     @Test @MainActor func sessionUpdatedDoesNotInsertUnknownProjectBeforeDefaultLoads() async {
         let apiClient = MockAPIClient()
         let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())

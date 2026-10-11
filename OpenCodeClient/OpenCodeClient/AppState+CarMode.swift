@@ -1,5 +1,11 @@
 import Foundation
 
+private struct CarTurnTarget {
+    var turnID: UUID
+    var host: HostRequestSnapshot
+    var contextKey: String
+}
+
 enum CarModeError: LocalizedError {
     case notConnected
     case selectedProjectUnsupported
@@ -20,7 +26,7 @@ enum CarModeError: LocalizedError {
 
 extension AppState {
     var carContextKey: String {
-        let directory = effectiveProjectDirectory ?? serverCurrentProjectWorktree ?? "__server_default__"
+        let directory = effectiveProjectDirectory ?? serverCurrentProjectWorktree ?? carLastKnownServerWorktree ?? "__server_default__"
         return "\(currentHostProfileID.uuidString)|\(directory)"
     }
 
@@ -37,13 +43,25 @@ extension AppState {
         guard !text.isEmpty else { return }
 
         let turnID = UUID()
+        let target = CarTurnTarget(
+            turnID: turnID,
+            host: captureHostRequestSnapshot(),
+            contextKey: carContextKey
+        )
         carActiveTurnID = turnID
         carLastTranscript = text
         carError = nil
         carPhase = .waitingReply
 
         do {
-            let session = try await ensureCarSession()
+            guard let session = try await ensureCarSession(target) else {
+                abandonCarTurnIfStillOwned(target)
+                return
+            }
+            guard carTurnIsCurrent(target) else {
+                abandonCarTurnIfStillOwned(target)
+                return
+            }
             let response = try await apiClient.promptStructured(
                 sessionID: session.id,
                 text: text,
@@ -52,10 +70,16 @@ extension AppState {
                 agent: "build",
                 model: CarModeProtocol.model
             )
-            guard carActiveTurnID == turnID else { return }
-            try await handleCarResponse(response, sessionID: session.id, turnID: turnID)
+            guard carTurnIsCurrent(target) else {
+                abandonCarTurnIfStillOwned(target)
+                return
+            }
+            try await handleCarResponse(response, sessionID: session.id, target: target)
         } catch {
-            guard carActiveTurnID == turnID else { return }
+            guard carTurnIsCurrent(target) else {
+                abandonCarTurnIfStillOwned(target)
+                return
+            }
             carError = error.localizedDescription
             carPhase = .failed
             carActiveTurnID = nil
@@ -86,25 +110,49 @@ extension AppState {
         carError = nil
     }
 
-    private func ensureCarSession() async throws -> Session {
+    func invalidateLocalCarTurn() {
+        let hadTurn = carActiveTurnID != nil
+        carActiveTurnID = nil
+        carActiveCapabilityCallbackID = nil
+        carSpeechOutput.stop()
+        if hadTurn {
+            carLastTranscript = ""
+            carError = nil
+        }
+        switch carPhase {
+        case .waitingReply, .speaking, .awaitingConfirmation:
+            carPhase = .idle
+        default:
+            break
+        }
+    }
+
+    private func ensureCarSession(_ target: CarTurnTarget) async throws -> Session? {
+        guard carTurnIsCurrent(target) else { return nil }
         guard isConnected else { throw CarModeError.notConnected }
 
-        if let record = currentCarSessionRecord {
+        let recordKey = carRecordKey(for: target)
+        if let record = carSessionsByContext[recordKey] {
             do {
                 let session = try await apiClient.session(sessionID: record.sessionID)
+                guard carTurnIsCurrent(target) else { return nil }
                 guard session.isArchived else { return session }
                 let restored = try await apiClient.updateSessionArchived(sessionID: session.id, archived: -1)
+                guard carTurnIsCurrent(target) else { return nil }
                 upsertSession(restored)
                 return restored
             } catch APIError.httpError(let statusCode, _) where statusCode == 404 {
-                carSessionsByContext.removeValue(forKey: carContextKey)
+                guard carTurnIsCurrent(target) else { return nil }
+                carSessionsByContext.removeValue(forKey: carRecordKey(for: target))
                 persistCarSessions()
             }
         }
 
+        guard carTurnIsCurrent(target) else { return nil }
         guard canCreateSession else { throw CarModeError.selectedProjectUnsupported }
         let session = try await apiClient.createSession(title: "Car Mode", directory: nil)
-        carSessionsByContext[carContextKey] = CarSessionRecord(
+        guard carTurnIsCurrent(target) else { return nil }
+        carSessionsByContext[carRecordKey(for: target)] = CarSessionRecord(
             sessionID: session.id,
             lastHandledAssistantMessageID: nil,
             pendingConfirmationID: nil,
@@ -115,19 +163,24 @@ extension AppState {
         return session
     }
 
-    private func handleCarResponse(_ response: MessageWithParts, sessionID: String, turnID: UUID) async throws {
+    private func handleCarResponse(_ response: MessageWithParts, sessionID: String, target: CarTurnTarget) async throws {
+        guard carTurnIsCurrent(target) else {
+            abandonCarTurnIfStillOwned(target)
+            return
+        }
         guard response.info.isAssistant,
               response.info.sessionID == sessionID,
               response.info.time.completed != nil else {
             throw CarModeError.invalidResponse
         }
         let envelope = try CarResponseEnvelope.accepted(from: response.info)
-        guard currentCarSessionRecord?.lastHandledAssistantMessageID != response.info.id else {
+        let recordKey = carRecordKey(for: target)
+        guard carSessionsByContext[recordKey]?.lastHandledAssistantMessageID != response.info.id else {
             carPhase = .idle
             carActiveTurnID = nil
             return
         }
-        var record = currentCarSessionRecord ?? CarSessionRecord(
+        var record = carSessionsByContext[recordKey] ?? CarSessionRecord(
             sessionID: sessionID,
             lastHandledAssistantMessageID: nil,
             pendingConfirmationID: nil,
@@ -136,13 +189,16 @@ extension AppState {
         record.lastHandledAssistantMessageID = response.info.id
         record.pendingConfirmationID = envelope.status == .needsConfirmation ? envelope.confirmation?.id : nil
         record.lastUsedAt = Date()
-        carSessionsByContext[carContextKey] = record
+        carSessionsByContext[recordKey] = record
         persistCarSessions()
 
         carLastResponse = envelope
         carPhase = .speaking
         await carSpeechOutput.speak(envelope.speech)
-        guard carActiveTurnID == turnID else { return }
+        guard carTurnIsCurrent(target) else {
+            abandonCarTurnIfStillOwned(target)
+            return
+        }
 
         if envelope.status == .completed, let action = envelope.clientActions.first {
             switch action {
@@ -154,7 +210,7 @@ extension AppState {
                 await requestClientCapability(
                     action,
                     sessionID: sessionID,
-                    carContextKey: carContextKey,
+                    carContextKey: carRecordKey(for: target),
                     assistantMessageID: response.info.id
                 )
             case .unknown:
@@ -162,6 +218,10 @@ extension AppState {
             }
         }
 
+        guard carTurnIsCurrent(target) else {
+            abandonCarTurnIfStillOwned(target)
+            return
+        }
         switch envelope.status {
         case .completed:
             carPhase = .idle
@@ -171,6 +231,91 @@ extension AppState {
             carPhase = .failed
         }
         carActiveTurnID = nil
+    }
+
+    func noteServerCurrentProjectWorktree(_ newValue: String?) {
+        let old = _serverCurrentProjectWorktree
+        guard old != newValue else { return }
+        let oldEffectiveCarServerDirectory = _serverCurrentProjectWorktree ?? carLastKnownServerWorktree
+        if effectiveProjectDirectory == nil,
+           let oldEffectiveCarServerDirectory, !oldEffectiveCarServerDirectory.isEmpty,
+           let newValue, !newValue.isEmpty,
+           oldEffectiveCarServerDirectory != newValue {
+            invalidateCarTurnForRealProjectChange()
+        }
+        _serverCurrentProjectWorktree = newValue
+        if let newValue, !newValue.isEmpty {
+            carLastKnownServerWorktree = newValue
+        }
+        if effectiveProjectDirectory == nil,
+           old == nil || old?.isEmpty == true,
+           let newValue, !newValue.isEmpty {
+            rehomeUnresolvedCarSession(to: newValue)
+        }
+    }
+
+    func clearCarLastKnownServerWorktree() {
+        carLastKnownServerWorktree = nil
+    }
+
+    func invalidateCarTurnForRealProjectChange() {
+        guard carActiveTurnID != nil
+            || carPhase == .waitingReply
+            || carPhase == .speaking
+            || carPhase == .awaitingConfirmation else { return }
+        invalidateLocalCarTurn()
+    }
+
+    private func rehomeUnresolvedCarSession(to worktree: String) {
+        let placeholder = unresolvedCarContextKey()
+        let resolved = "\(currentHostProfileID.uuidString)|\(worktree)"
+        guard placeholder != resolved, let record = carSessionsByContext[placeholder] else { return }
+        if carSessionsByContext[resolved] == nil {
+            carSessionsByContext[resolved] = record
+            carSessionsByContext.removeValue(forKey: placeholder)
+            persistCarSessions()
+        }
+    }
+
+    private func unresolvedCarContextKey() -> String {
+        "\(currentHostProfileID.uuidString)|__server_default__"
+    }
+
+    private func carContextMatchesCaptured(_ captured: String) -> Bool {
+        if carContextKey == captured { return true }
+        guard effectiveProjectDirectory == nil,
+              let known = serverCurrentProjectWorktree ?? carLastKnownServerWorktree, !known.isEmpty else { return false }
+        return captured == unresolvedCarContextKey()
+    }
+
+    private func carRecordKey(for target: CarTurnTarget) -> String {
+        guard effectiveProjectDirectory == nil,
+              let known = serverCurrentProjectWorktree ?? carLastKnownServerWorktree, !known.isEmpty,
+              target.contextKey == unresolvedCarContextKey() else {
+            return target.contextKey
+        }
+        return "\(currentHostProfileID.uuidString)|\(known)"
+    }
+
+    private func carTurnIsCurrent(_ target: CarTurnTarget) -> Bool {
+        !Task.isCancelled
+            && carActiveTurnID == target.turnID
+            && isCurrentHostRequest(target.host)
+            && carContextMatchesCaptured(target.contextKey)
+    }
+
+    private func abandonCarTurnIfStillOwned(_ target: CarTurnTarget) {
+        guard carActiveTurnID == target.turnID else { return }
+        carActiveTurnID = nil
+        carLastTranscript = ""
+        carError = nil
+        carSpeechOutput.stop()
+        switch carPhase {
+        case .waitingReply, .speaking:
+            carPhase = .idle
+        default:
+            break
+        }
     }
 
     func persistCarSessions() {
