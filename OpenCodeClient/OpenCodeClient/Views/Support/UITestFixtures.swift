@@ -26,6 +26,7 @@ enum UITestFixtures {
             || SessionScrollFixture.isActive
             || FileSearchFixture.isActive
             || FileContentReuseFixture.isActive
+            || TurnStabilityFixture.isActive
     }
 
     static var hasUITestWebPreviewModeFixture: Bool {
@@ -128,6 +129,12 @@ enum UITestFixtures {
     }
 
     static func makeInitialState() -> AppState {
+        if TurnStabilityFixture.isActive {
+            let state = TurnStabilityFixture.makeAppState()
+            TurnStabilityFixture.apply(to: state)
+            return state
+        }
+
         if QuestionRecoveryFixture.isActive {
             let state = QuestionRecoveryFixture.makeAppState()
             QuestionRecoveryFixture.apply(to: state)

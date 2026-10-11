@@ -32,13 +32,17 @@ enum MarkdownImageResolver {
         let matches = imageRegex.matches(in: text, range: fullRange)
         
         guard !matches.isEmpty else { return text }
+        let protected = imageSyntaxProtectedRanges(in: text)
         
         var result = text
         // Process matches in reverse order to maintain correct string indices
         for match in matches.reversed() {
             if Task.isCancelled { return text }
 
-            guard let altRange = Range(match.range(at: 1), in: text),
+            guard let matchRange = Range(match.range, in: text),
+                  !protected.contains(where: { $0.overlaps(matchRange) }),
+                  !isEscapedImageStart(matchRange.lowerBound, in: text),
+                  let altRange = Range(match.range(at: 1), in: text),
                   let urlRange = Range(match.range(at: 2), in: text) else { continue }
             
             let alt = String(text[altRange])
@@ -111,6 +115,240 @@ enum MarkdownImageResolver {
 
         if resolvedPath.hasPrefix("./") { resolvedPath = String(resolvedPath.dropFirst(2)) }
         return resolvedPath
+    }
+
+    private struct OpenFence {
+        let marker: Character
+        let length: Int
+        let quoteDepth: Int
+    }
+
+    private static func imageSyntaxProtectedRanges(in text: String) -> [Range<String.Index>] {
+        let fences = fencedCodeRanges(in: text)
+        let indented = indentedCodeRanges(in: text)
+        return fences + indented + inlineCodeRanges(in: text, avoiding: fences + indented)
+    }
+
+    private static func fencedCodeRanges(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var open: OpenFence?
+        var openStart: String.Index?
+        var index = text.startIndex
+        while index < text.endIndex {
+            let lineEnd = text[index...].firstIndex(of: "\n") ?? text.endIndex
+            let parsed = quoteAndContent(text[index..<lineEnd])
+            if let fence = open {
+                if parsed.depth < fence.quoteDepth {
+                    if let start = openStart {
+                        ranges.append(start..<index)
+                    }
+                    open = nil
+                    openStart = nil
+                    continue
+                }
+                let closerContent = quoteAndContent(text[index..<lineEnd], maxDepth: fence.quoteDepth).content
+                if isClosingFence(closerContent, open: fence) {
+                    let end = lineEnd < text.endIndex ? text.index(after: lineEnd) : text.endIndex
+                    if let start = openStart {
+                        ranges.append(start..<end)
+                    }
+                    open = nil
+                    openStart = nil
+                    index = end
+                    continue
+                }
+                index = lineEnd < text.endIndex ? text.index(after: lineEnd) : text.endIndex
+                continue
+            }
+            if let marker = openingFence(parsed.content) {
+                open = OpenFence(marker: marker.char, length: marker.length, quoteDepth: parsed.depth)
+                openStart = index
+            }
+            index = lineEnd < text.endIndex ? text.index(after: lineEnd) : text.endIndex
+        }
+        if let start = openStart {
+            ranges.append(start..<text.endIndex)
+        }
+        return ranges
+    }
+
+    private static func quoteAndContent(_ line: Substring, maxDepth: Int = Int.max) -> (depth: Int, content: Substring) {
+        var index = line.startIndex
+        var depth = 0
+        while index < line.endIndex, depth < maxDepth {
+            var spaces = 0
+            var cursor = index
+            while cursor < line.endIndex, line[cursor] == " ", spaces < 3 {
+                spaces += 1
+                cursor = line.index(after: cursor)
+            }
+            guard cursor < line.endIndex, line[cursor] == ">" else { break }
+            depth += 1
+            cursor = line.index(after: cursor)
+            if cursor < line.endIndex, line[cursor] == " " {
+                cursor = line.index(after: cursor)
+            }
+            index = cursor
+        }
+        var content = line[index...]
+        if content.last == "\r" {
+            content = content.dropLast()
+        }
+        return (depth, content)
+    }
+
+    private static func leadingSpaces(_ content: Substring, max: Int) -> (count: Int, rest: Substring) {
+        var count = 0
+        var index = content.startIndex
+        while index < content.endIndex, content[index] == " ", count < max {
+            count += 1
+            index = content.index(after: index)
+        }
+        return (count, content[index...])
+    }
+
+    private static func openingFence(_ content: Substring) -> (char: Character, length: Int)? {
+        let (_, rest) = leadingSpaces(content, max: 3)
+        guard let char = rest.first, char == "`" || char == "~" else { return nil }
+        var length = 0
+        var index = rest.startIndex
+        while index < rest.endIndex, rest[index] == char {
+            length += 1
+            index = rest.index(after: index)
+        }
+        guard length >= 3 else { return nil }
+        if char == "`", rest[index...].contains("`") { return nil }
+        return (char, length)
+    }
+
+    private static func isClosingFence(_ content: Substring, open: OpenFence) -> Bool {
+        let (_, rest) = leadingSpaces(content, max: 3)
+        guard let char = rest.first, char == open.marker else { return false }
+        var length = 0
+        var index = rest.startIndex
+        while index < rest.endIndex, rest[index] == char {
+            length += 1
+            index = rest.index(after: index)
+        }
+        guard length >= open.length else { return false }
+        return rest[index...].allSatisfy { $0 == " " || $0 == "\t" }
+    }
+
+    private static func indentedCodeRanges(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var index = text.startIndex
+        var atBlockBoundary = true
+        var codeStart: String.Index?
+        while index < text.endIndex {
+            let lineEnd = text[index...].firstIndex(of: "\n") ?? text.endIndex
+            let parsed = quoteAndContent(text[index..<lineEnd])
+            let next = lineEnd < text.endIndex ? text.index(after: lineEnd) : text.endIndex
+            if parsed.depth > 0 {
+                if let start = codeStart {
+                    ranges.append(start..<index)
+                    codeStart = nil
+                }
+                atBlockBoundary = false
+                index = next
+                continue
+            }
+            let content = parsed.content
+            let blank = content.allSatisfy { $0 == " " || $0 == "\t" }
+            let indented = leadingSpaces(content, max: 4).count == 4
+            if codeStart != nil {
+                if blank || indented {
+                    index = next
+                    continue
+                }
+                ranges.append(codeStart!..<index)
+                codeStart = nil
+            }
+            if atBlockBoundary, !blank, indented {
+                codeStart = index
+                atBlockBoundary = false
+                index = next
+                continue
+            }
+            atBlockBoundary = blank
+            index = next
+        }
+        if let start = codeStart {
+            ranges.append(start..<text.endIndex)
+        }
+        return ranges
+    }
+
+    private static func inlineCodeRanges(in text: String, avoiding fences: [Range<String.Index>]) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var index = text.startIndex
+        while index < text.endIndex {
+            if let fence = fences.first(where: { $0.contains(index) }) {
+                index = fence.upperBound
+                continue
+            }
+            if text[index] != "`" || hasOddPrecedingBackslash(index, in: text) {
+                index = text.index(after: index)
+                continue
+            }
+            let openerEnd = backtickRunEnd(in: text, from: index)
+            let length = text.distance(from: index, to: openerEnd)
+            if let closer = closingBacktickRun(in: text, from: openerEnd, length: length, avoiding: fences) {
+                let end = text.index(closer, offsetBy: length)
+                ranges.append(index..<end)
+                index = end
+            } else {
+                index = openerEnd
+            }
+        }
+        return ranges
+    }
+
+    private static func backtickRunEnd(in text: String, from start: String.Index) -> String.Index {
+        var index = start
+        while index < text.endIndex, text[index] == "`" {
+            index = text.index(after: index)
+        }
+        return index
+    }
+
+    private static func closingBacktickRun(
+        in text: String,
+        from start: String.Index,
+        length: Int,
+        avoiding fences: [Range<String.Index>]
+    ) -> String.Index? {
+        var index = start
+        while index < text.endIndex {
+            if fences.contains(where: { $0.contains(index) }) {
+                return nil
+            }
+            if text[index] == "`" {
+                let end = backtickRunEnd(in: text, from: index)
+                if text.distance(from: index, to: end) == length {
+                    return index
+                }
+                index = end
+                continue
+            }
+            index = text.index(after: index)
+        }
+        return nil
+    }
+
+    private static func isEscapedImageStart(_ index: String.Index, in text: String) -> Bool {
+        hasOddPrecedingBackslash(index, in: text)
+    }
+
+    private static func hasOddPrecedingBackslash(_ index: String.Index, in text: String) -> Bool {
+        var backslashes = 0
+        var cursor = index
+        while cursor > text.startIndex {
+            let previous = text.index(before: cursor)
+            guard text[previous] == "\\" else { break }
+            backslashes += 1
+            cursor = previous
+        }
+        return backslashes % 2 == 1
     }
 
     private static func mimeType(for fileExtension: String) -> String {

@@ -13,6 +13,7 @@ struct MessageRowView: View {
 
     @Bindable var state: AppState
     let message: MessageWithParts
+    var turnMessages: [MessageWithParts]? = nil
     let sessionTodos: [TodoItem]
     let workspaceDirectory: String?
     let onOpenResolvedPath: (String) -> Void
@@ -125,9 +126,7 @@ struct MessageRowView: View {
             case .fileCard(let part):
                 return "tile-file-\(part.id)"
             case .toolCalls(let parts):
-                let first = parts.first?.id ?? "nil"
-                let last = parts.last?.id ?? "nil"
-                return "tile-toolcalls-\(first)-\(last)"
+                return "tile-toolcalls-\(parts.first?.id ?? "nil")"
             }
         }
     }
@@ -179,8 +178,8 @@ struct MessageRowView: View {
         return blocks
     }
 
-    private var assistantBlocks: [AssistantBlock] {
-        Self.buildAssistantBlocks(parts: message.parts)
+    private var turnPresentation: AssistantTurnPresentation {
+        AssistantTurnPresentation(messages: turnMessages ?? [message])
     }
 
     private struct AssistantLayout {
@@ -188,18 +187,14 @@ struct MessageRowView: View {
         let contents: [AssistantBlock]
     }
 
-    /// Splits the assistant blocks into grid tiles (process tiles plus file
-    /// cards, in part order) and full-width content blocks (text /
-    /// attachments), which render after the grid.
-    private var assistantLayout: AssistantLayout {
+    static func cardGridTiles(for parts: [Part]) -> [CardGridTile] {
         var tiles: [CardGridTile] = []
-        var contents: [AssistantBlock] = []
-        for block in assistantBlocks {
+        for block in buildAssistantBlocks(parts: parts) {
             switch block {
             case .thinking(let part):
                 tiles.append(.thinking(part))
-            case .cards(let parts):
-                let (fileParts, otherParts) = ToolCardClassifier.split(parts)
+            case .cards(let cardParts):
+                let (fileParts, otherParts) = ToolCardClassifier.split(cardParts)
                 for filePart in fileParts {
                     tiles.append(.fileCard(filePart))
                 }
@@ -207,10 +202,28 @@ struct MessageRowView: View {
                     tiles.append(.toolCalls(otherParts))
                 }
             case .text, .attachment:
-                contents.append(block)
+                break
             }
         }
-        return AssistantLayout(tiles: tiles, contents: contents)
+        return tiles
+    }
+
+    /// Splits the assistant blocks into grid tiles (process tiles plus file
+    /// cards, in part order) and full-width content blocks (text /
+    /// attachments), which render after the grid.
+    private func assistantLayout(for parts: [Part]) -> AssistantLayout {
+        let blocks = Self.buildAssistantBlocks(parts: parts)
+        return AssistantLayout(
+            tiles: Self.cardGridTiles(for: parts),
+            contents: blocks.compactMap { block in
+                switch block {
+                case .text, .attachment:
+                    return block
+                case .thinking, .cards:
+                    return nil
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -499,7 +512,10 @@ struct MessageRowView: View {
     }
 
     private var copyableText: String {
-        Self.copyableText(for: message)
+        if message.info.isUser {
+            return Self.copyableText(for: message)
+        }
+        return turnPresentation.copyableText
     }
 
     private var messageActionsMenu: some View {
@@ -646,17 +662,19 @@ struct MessageRowView: View {
     }
 
     private var assistantMessageView: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let presentation = turnPresentation
+        let copyable = presentation.copyableText
+        return VStack(alignment: .leading, spacing: 6) {
             // No "OpenCode" speaker title — the user's blue left-bar vs the
             // assistant's container-less reply already make it clear who's
             // speaking, so an extra blue label is redundant.
-            if let structuredSpeech = Self.structuredSpeechFallback(for: message) {
-                markdownText(structuredSpeech, isUser: false)
+            ForEach(presentation.speeches, id: \.messageID) { speech in
+                markdownText(speech.text, isUser: false)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("structured-assistant-speech")
             }
 
-            let layout = assistantLayout
+            let layout = assistantLayout(for: presentation.parts)
 
             // All process tiles (thinking / merged tool calls / file cards)
             // share one 2-up (iPhone) / 3-up (iPad) grid and are always
@@ -701,14 +719,14 @@ struct MessageRowView: View {
 
             // Model footer: same caption2/tertiary "providerID/modelID" treatment as
             // the user message, placed at the end of the assistant turn.
-            if message.info.resolvedModel != nil || !copyableText.isEmpty {
+            if let footer = presentation.footer {
                 HStack {
-                    if let model = message.info.resolvedModel {
-                        let timing = state.stepTimings[message.info.id]
+                    if let model = footer.model {
+                        let timing = state.stepTimings[footer.messageID]
                         Text(
                             Self.modelFooter(
                                 model: model,
-                                general: message.info.throughputLabelExcludingToolSeconds(message.toolRunSeconds),
+                                general: footer.generalThroughput,
                                 decode: timing?.decodeLabel
                             )
                         )
@@ -716,13 +734,13 @@ struct MessageRowView: View {
                             .foregroundStyle(.tertiary)
                     }
                     Spacer()
-                    if !copyableText.isEmpty { messageActionsMenu }
+                    if !copyable.isEmpty { messageActionsMenu }
                 }
                 .padding(.leading, 4)
             }
 
-            if let err = message.info.errorMessageForDisplay {
-                Text(err)
+            ForEach(presentation.errors, id: \.messageID) { error in
+                Text(error.text)
                     .font(.caption)
                     .foregroundStyle(DesignColors.Semantic.error)
                     .padding(.horizontal, 12)
