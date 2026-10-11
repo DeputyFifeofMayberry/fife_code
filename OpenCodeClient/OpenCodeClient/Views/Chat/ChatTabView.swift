@@ -12,6 +12,72 @@ import VoiceFlowKit
 import UIKit
 #endif
 
+enum ChatComposerRestore {
+    static func shouldRestore(
+        sourceSessionID: String?,
+        currentSessionID: String?,
+        capturedRevision: UInt64,
+        currentRevision: UInt64,
+        capturedHost: HostRequestSnapshot,
+        currentHost: HostRequestSnapshot,
+        capturedSelection: UUID,
+        currentSelection: UUID
+    ) -> Bool {
+        guard let sourceSessionID, sourceSessionID == currentSessionID else { return false }
+        guard capturedRevision == currentRevision else { return false }
+        guard capturedHost == currentHost else { return false }
+        return capturedSelection == currentSelection
+    }
+
+    static func textAndAttachments(
+        sourceSessionID: String?,
+        currentSessionID: String?,
+        capturedRevision: UInt64,
+        currentRevision: UInt64,
+        capturedHost: HostRequestSnapshot,
+        currentHost: HostRequestSnapshot,
+        capturedSelection: UUID,
+        currentSelection: UUID,
+        sentText: String,
+        sentAttachments: [ComposerImageAttachment],
+        currentText: String,
+        currentAttachments: [ComposerImageAttachment]
+    ) -> (text: String, attachments: [ComposerImageAttachment]) {
+        guard shouldRestore(
+            sourceSessionID: sourceSessionID,
+            currentSessionID: currentSessionID,
+            capturedRevision: capturedRevision,
+            currentRevision: currentRevision,
+            capturedHost: capturedHost,
+            currentHost: currentHost,
+            capturedSelection: capturedSelection,
+            currentSelection: currentSelection
+        ) else {
+            return (currentText, currentAttachments)
+        }
+        return (sentText, sentAttachments)
+    }
+}
+
+enum ChatComposerInputBinding {
+    static func make(
+        text: @escaping () -> String,
+        setText: @escaping (String) -> Void,
+        revision: @escaping () -> UInt64,
+        setRevision: @escaping (UInt64) -> Void
+    ) -> Binding<String> {
+        Binding(
+            get: text,
+            set: { newValue in
+                if newValue != text() {
+                    setRevision(revision() &+ 1)
+                }
+                setText(newValue)
+            }
+        )
+    }
+}
+
 private enum MessageGroupItem: Identifiable {
     case user(MessageWithParts)
     case assistantMerged([MessageWithParts])
@@ -120,6 +186,7 @@ struct ChatTabView: View {
     @State var speechAudioLevelTask: Task<Void, Never>?
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var imageAttachments: [ComposerImageAttachment] = []
+    @State private var composerRevision: UInt64 = 0
     @State private var attachmentError: String?
     @State private var isLoadingAttachment = false
     @State private var inlinePreviewPath: String?
@@ -857,7 +924,7 @@ struct ChatTabView: View {
                                                          onEditFromMessage: { messageID in
                                                              Task {
                                                                  guard let draft = await state.editFromMessage(messageID: messageID) else { return }
-                                                                 inputText = draft
+                                                                      composerInputBinding.wrappedValue = draft
                                                              }
                                                          }
                                                      )
@@ -879,7 +946,7 @@ struct ChatTabView: View {
                                                              onEditFromMessage: { messageID in
                                                                  Task {
                                                                      guard let draft = await state.editFromMessage(messageID: messageID) else { return }
-                                                                     inputText = draft
+                                                                     composerInputBinding.wrappedValue = draft
                                                                  }
                                                              }
                                                          )
@@ -1029,7 +1096,7 @@ struct ChatTabView: View {
 
                         ZStack(alignment: .topLeading) {
                             ChatComposerTextView(
-                                text: $inputText,
+                                text: composerInputBinding,
                                 hasMarkedText: $hasMarkedText,
                                 placeholder: L10n.t(.chatInputPlaceholder),
                                 autoScrollToBottomOnTextChange: Self.shouldAutoScrollSpeechTranscript(
@@ -1127,6 +1194,7 @@ struct ChatTabView: View {
                 }
             }
             .onChange(of: state.currentSessionID) { oldID, newID in
+                composerRevision &+= 1
                 let draftText = inputText
                 state.setDraftText(draftText, for: oldID)
                 syncDraftFromState(sessionID: newID)
@@ -1173,13 +1241,26 @@ struct ChatTabView: View {
         }
     }
 
+    var composerInputBinding: Binding<String> {
+        ChatComposerInputBinding.make(
+            text: { inputText },
+            setText: { inputText = $0 },
+            revision: { composerRevision },
+            setRevision: { composerRevision = $0 }
+        )
+    }
+
+    func assignComposerText(_ text: String) {
+        inputText = text
+    }
+
     private func syncDraftFromState(sessionID: String?) {
         isSyncingDraft = true
         if sessionID == nil,
            let completedDraft = completedSpeechDraftByOwner[ChatSpeechOwner(sessionID: nil)] {
-            inputText = completedDraft
+            assignComposerText(completedDraft)
         } else {
-            inputText = state.draftText(for: sessionID)
+            assignComposerText(state.draftText(for: sessionID))
         }
         isSyncingDraft = false
     }
@@ -1230,8 +1311,12 @@ struct ChatTabView: View {
         guard canSendNow else { return }
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = imageAttachments
+        let sourceSessionID = state.currentSessionID
+        let revision = composerRevision
+        let sourceHost = state.captureHostRequestSnapshot()
+        let sourceSelection = state.sessionLoadingID
 
-        inputText = ""
+        assignComposerText("")
         imageAttachments = []
         selectedPhotoItems = []
         hasMarkedText = false
@@ -1239,10 +1324,23 @@ struct ChatTabView: View {
         Task {
             let success = await state.sendMessage(text, attachments: attachments)
             isSending = false
-            if !success {
-                inputText = text
-                imageAttachments = attachments
-            }
+            guard !success else { return }
+            let restored = ChatComposerRestore.textAndAttachments(
+                sourceSessionID: sourceSessionID,
+                currentSessionID: state.currentSessionID,
+                capturedRevision: revision,
+                currentRevision: composerRevision,
+                capturedHost: sourceHost,
+                currentHost: state.captureHostRequestSnapshot(),
+                capturedSelection: sourceSelection,
+                currentSelection: state.sessionLoadingID,
+                sentText: text,
+                sentAttachments: attachments,
+                currentText: inputText,
+                currentAttachments: imageAttachments
+            )
+            assignComposerText(restored.text)
+            imageAttachments = restored.attachments
         }
     }
 
@@ -1251,6 +1349,7 @@ struct ChatTabView: View {
             HStack(spacing: DesignSpacing.sm) {
                 ForEach(imageAttachments) { attachment in
                     ComposerAttachmentThumbnail(attachment: attachment) {
+                        composerRevision &+= 1
                         imageAttachments.removeAll { $0.id == attachment.id }
                     }
                 }
@@ -1283,6 +1382,7 @@ struct ChatTabView: View {
             do {
                 guard let data = try await item.loadTransferable(type: Data.self) else { continue }
                 let attachment = try ComposerImageTranscoder.makeAttachment(from: data)
+                composerRevision &+= 1
                 imageAttachments.append(attachment)
             } catch {
                 attachmentError = error.localizedDescription

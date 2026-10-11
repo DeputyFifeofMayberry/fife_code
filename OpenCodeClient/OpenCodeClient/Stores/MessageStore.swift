@@ -37,6 +37,20 @@ final class MessageStore {
     /// Send failures surfaced inline under the affected user row (no alert).
     /// Keyed by message id; cleared when the row is confirmed or removed.
     var failedSendReasonsByID: [String: String] = [:]
+    /// Increments when a live message write lands. REST snapshots capture it
+    /// at request start; a mismatch means the snapshot must not replace the window.
+    private(set) var liveRevision: UInt64 = 0
+    private var outboundSends: [String: OutboundSend] = [:]
+    private var outboundQueue: UInt64 = 0
+
+    struct OutboundSend {
+        var hostProfileID: UUID
+        var sessionID: String
+        var row: MessageWithParts
+        var queueIndex: UInt64
+        var pending: Bool
+        var failure: String?
+    }
 
     /// Per-step timing captured from the live SSE stream, keyed by assistant
     /// message id. Only populated while the client observed the stream for that
@@ -195,6 +209,37 @@ final class MessageStore {
         partTypes = [:]
     }
 
+    func noteLiveMutation() {
+        liveRevision &+= 1
+    }
+
+    func rememberOutboundSend(hostProfileID: UUID, sessionID: String, row: MessageWithParts) {
+        outboundQueue &+= 1
+        outboundSends[row.info.id] = OutboundSend(
+            hostProfileID: hostProfileID,
+            sessionID: sessionID,
+            row: row,
+            queueIndex: outboundQueue,
+            pending: true,
+            failure: nil
+        )
+        trackPendingOptimisticMessage(row.info.id)
+    }
+
+    func outboundRows(hostProfileID: UUID, sessionID: String) -> [MessageWithParts] {
+        outboundSends.values
+            .filter { $0.hostProfileID == hostProfileID && $0.sessionID == sessionID && ($0.pending || $0.failure != nil) }
+            .sorted { $0.queueIndex < $1.queueIndex }
+            .map(\.row)
+    }
+
+    func oldestPendingOutboundID(hostProfileID: UUID, sessionID: String) -> String? {
+        outboundSends.values
+            .filter { $0.hostProfileID == hostProfileID && $0.sessionID == sessionID && $0.pending }
+            .min { $0.queueIndex < $1.queueIndex }?
+            .row.info.id
+    }
+
     func isPendingOptimisticMessage(_ messageID: String) -> Bool {
         pendingOptimisticMessageIDs.contains(messageID)
     }
@@ -205,19 +250,69 @@ final class MessageStore {
 
     func untrackPendingOptimisticMessages(_ messageIDs: Set<String>) {
         pendingOptimisticMessageIDs.subtract(messageIDs)
+        for id in messageIDs {
+            outboundSends[id]?.pending = false
+            if outboundSends[id]?.failure == nil {
+                outboundSends[id] = nil
+            }
+        }
     }
 
     func markSendFailed(messageID: String, reason: String) {
+        guard outboundSends[messageID] != nil else { return }
         failedSendReasonsByID[messageID] = reason
+        outboundSends[messageID]?.pending = false
+        outboundSends[messageID]?.failure = reason
+    }
+
+    func acknowledgeOutboundSend(messageID: String, hostProfileID: UUID, sessionID: String) {
+        guard let send = outboundSends[messageID],
+              send.hostProfileID == hostProfileID,
+              send.sessionID == sessionID else { return }
+        untrackPendingOptimisticMessages([messageID])
+        clearSendFailure(messageID: messageID)
+    }
+
+    func removeOutboundSendIfMatches(messageID: String, hostProfileID: UUID, sessionID: String) {
+        guard let send = outboundSends[messageID],
+              send.hostProfileID == hostProfileID,
+              send.sessionID == sessionID else { return }
+        outboundSends[messageID] = nil
+        pendingOptimisticMessageIDs.remove(messageID)
+        failedSendReasonsByID.removeValue(forKey: messageID)
+    }
+
+    func removeOutboundSends(hostProfileID: UUID, sessionID: String) {
+        removeOutboundSends { $0.hostProfileID == hostProfileID && $0.sessionID == sessionID }
+    }
+
+    func removeOutboundSends(hostProfileID: UUID) {
+        removeOutboundSends { $0.hostProfileID == hostProfileID }
+    }
+
+    private func removeOutboundSends(where matches: (OutboundSend) -> Bool) {
+        let ids = outboundSends.filter { matches($0.value) }.map(\.key)
+        for id in ids {
+            outboundSends[id] = nil
+            pendingOptimisticMessageIDs.remove(id)
+            failedSendReasonsByID.removeValue(forKey: id)
+        }
     }
 
     func clearSendFailure(messageID: String) {
         failedSendReasonsByID.removeValue(forKey: messageID)
+        outboundSends[messageID]?.failure = nil
+        if outboundSends[messageID]?.pending != true {
+            outboundSends[messageID] = nil
+        }
     }
 
     func pruneSendFailures(loadedMessageIDs: Set<String>) {
         for id in failedSendReasonsByID.keys where loadedMessageIDs.contains(id) {
             failedSendReasonsByID.removeValue(forKey: id)
+            if outboundSends[id]?.pending != true {
+                outboundSends[id] = nil
+            }
         }
     }
 
@@ -267,6 +362,7 @@ final class MessageStore {
             }
             messages[rowIndex] = row
             partsByMessage[part.messageID] = row.parts
+            noteLiveMutation()
             return .applied
         }
 
@@ -293,6 +389,7 @@ final class MessageStore {
         )
         messages.append(MessageWithParts(info: shell, parts: [part]))
         partsByMessage[part.messageID] = [part]
+        noteLiveMutation()
         return .applied
     }
 
@@ -313,6 +410,7 @@ final class MessageStore {
             messages.append(MessageWithParts(info: info, parts: []))
             partsByMessage[info.id] = []
         }
+        noteLiveMutation()
         if info.isUser {
             untrackPendingOptimisticMessages([info.id])
             clearSendFailure(messageID: info.id)
@@ -341,11 +439,14 @@ final class MessageStore {
         }
         messages[rowIndex].parts[partIndex].text =
             (messages[rowIndex].parts[partIndex].text ?? "") + delta
+        partsByMessage[messageID] = messages[rowIndex].parts
+        noteLiveMutation()
     }
 
     /// Removes one part (SSE `message.part.removed`; the payload carries only
     /// ids). No-op when the row or part is not loaded.
     func removePart(messageID: String, partID: String) {
+        noteLiveMutation()
         guard let rowIndex = messages.firstIndex(where: { $0.info.id == messageID }) else { return }
         guard let partIndex = messages[rowIndex].parts.firstIndex(where: { $0.id == partID }) else { return }
         messages[rowIndex].parts.remove(at: partIndex)
@@ -356,9 +457,10 @@ final class MessageStore {
     /// housekeeping: drops the parts index entry, untracks the id, and clears
     /// any inline send failure.
     func removeMessageRow(messageID: String) {
-        guard messages.contains(where: { $0.info.id == messageID }) else { return }
+        noteLiveMutation()
         messages.removeAll { $0.info.id == messageID }
         partsByMessage[messageID] = nil
+        outboundSends[messageID] = nil
         untrackPendingOptimisticMessages([messageID])
         clearSendFailure(messageID: messageID)
     }

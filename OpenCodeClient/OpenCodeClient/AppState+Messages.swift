@@ -14,6 +14,15 @@ extension AppState {
         pendingIDs: Set<String> = []
     ) -> [MessageWithParts] {
         guard let revertMessageID else { return messages }
+        if let boundary = messages.firstIndex(where: { $0.info.id == revertMessageID }) {
+            return messages.enumerated().compactMap { index, message in
+                if pendingIDs.contains(message.info.id) || message.info.id.hasPrefix("temp-") || index < boundary {
+                    return message
+                }
+                return nil
+            }
+        }
+        guard OrderedServerID.isOrdered(revertMessageID, prefix: "msg") else { return messages }
         return messages.filter { message in
             pendingIDs.contains(message.info.id) || message.info.id.hasPrefix("temp-") || message.info.id < revertMessageID
         }
@@ -21,12 +30,23 @@ extension AppState {
 
     func loadMessages(allowMissingSessionRecovery: Bool = true) async {
         guard let sessionID = currentSessionID else { return }
+        let host = captureHostRequestSnapshot()
+        let selection = sessionLoadingID
+        let revisionAtStart = messageStore.liveRevision
+        messageSnapshotRequestSequence &+= 1
+        let requestSequence = messageSnapshotRequestSequence
         do {
             let fetchLimit = Self.normalizedMessageFetchLimit(current: loadedMessageLimitBySessionID[sessionID])
             loadedMessageLimitBySessionID[sessionID] = fetchLimit
             let loaded = try await apiClient.messages(sessionID: sessionID, limit: fetchLimit)
             Self.logger.debug("loadMessages: session=\(sessionID, privacy: .public) limit=\(fetchLimit, privacy: .public) returned=\(loaded.count, privacy: .public)")
-            guard Self.shouldApplySessionScopedResult(requestedSessionID: sessionID, currentSessionID: currentSessionID) else {
+            guard acceptsMessageSnapshot(
+                host: host,
+                selection: selection,
+                sessionID: sessionID,
+                revisionAtStart: revisionAtStart,
+                requestSequence: requestSequence
+            ) else {
                 Self.logger.debug("drop stale loadMessages result requested=\(sessionID, privacy: .public) current=\(self.currentSessionID ?? "nil", privacy: .public)")
                 return
             }
@@ -52,34 +72,32 @@ extension AppState {
             }
 
             let loadedMessageIDs = Set(loaded.map { $0.info.id })
-            // Optimistic rows carry the same deterministic msg_ id the server
-            // persists, so reconciliation is pure id membership: rows whose id
-            // has not appeared server-side yet stay visible, confirmed ids drop
-            // out of the pending set, and the merge below dedupes by id.
-            let pendingMessages = messages.filter {
-                messageStore.isPendingOptimisticMessage($0.info.id)
-                    || messageStore.failedSendReasonsByID[$0.info.id] != nil
-            }
             messageStore.untrackPendingOptimisticMessages(loadedMessageIDs)
             messageStore.pruneSendFailures(loadedMessageIDs: loadedMessageIDs)
 
-            var merged: [MessageWithParts] = loaded
-            for message in pendingMessages where !loadedMessageIDs.contains(message.info.id) {
-                merged.append(message)
-            }
-
-            // Defensively dedupe by message id. Keep the latest occurrence.
             var dedupedMessages: [MessageWithParts] = []
-            var dedupedIndexByMessageID: [String: Int] = [:]
-            for message in merged {
-                if let existingIndex = dedupedIndexByMessageID[message.info.id] {
+            var indexByMessageID: [String: Int] = [:]
+            for message in loaded {
+                if let existingIndex = indexByMessageID[message.info.id] {
                     dedupedMessages[existingIndex] = message
                 } else {
-                    dedupedIndexByMessageID[message.info.id] = dedupedMessages.count
+                    indexByMessageID[message.info.id] = dedupedMessages.count
                     dedupedMessages.append(message)
                 }
             }
-
+            for message in messages where message.info.sessionID == sessionID
+                && indexByMessageID[message.info.id] == nil
+                && (messageStore.isPendingOptimisticMessage(message.info.id)
+                    || messageStore.failedSendReasonsByID[message.info.id] != nil) {
+                indexByMessageID[message.info.id] = dedupedMessages.count
+                dedupedMessages.append(message)
+            }
+            for message in messageStore.outboundRows(hostProfileID: host.hostProfileID, sessionID: sessionID)
+            where indexByMessageID[message.info.id] == nil {
+                indexByMessageID[message.info.id] = dedupedMessages.count
+                dedupedMessages.append(message)
+            }
+            acceptedMessageSnapshotSequence = requestSequence
             messages = dedupedMessages
 
             var partsByMessageID: [String: [Part]] = [:]
@@ -96,15 +114,18 @@ extension AppState {
         } catch let error as DecodingError {
             Self.logger.error("loadMessages decode failed: session=\(sessionID, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         } catch {
+            guard isCurrentHostRequest(host),
+                  sessionLoadingID == selection,
+                  requestSequence == messageSnapshotRequestSequence,
+                  Self.shouldApplySessionScopedResult(requestedSessionID: sessionID, currentSessionID: currentSessionID) else {
+                Self.logger.debug("ignore stale loadMessages error requested=\(sessionID, privacy: .public) current=\(self.currentSessionID ?? "nil", privacy: .public)")
+                return
+            }
             if await recoverFromMissingCurrentSessionIfNeeded(
                 error: error,
                 requestedSessionID: sessionID,
                 allowMissingSessionRecovery: allowMissingSessionRecovery
             ) {
-                return
-            }
-            guard Self.shouldApplySessionScopedResult(requestedSessionID: sessionID, currentSessionID: currentSessionID) else {
-                Self.logger.debug("ignore stale loadMessages error requested=\(sessionID, privacy: .public) current=\(self.currentSessionID ?? "nil", privacy: .public)")
                 return
             }
             connectionError = error.localizedDescription
@@ -167,19 +188,55 @@ extension AppState {
             sendError = L10n.t(.chatSelectSessionFirst)
             return false
         }
-        do {
-            if sessions.first(where: { $0.id == sessionID })?.isArchived == true {
-                try await restoreSession(sessionID: sessionID)
-            }
-        } catch {
-            sendError = error.localizedDescription
-            return false
-        }
-
-        let messageID = Self.makeServerID(prefix: "msg")
-        let tempMessageID = appendOptimisticUserMessage(text, attachments: attachments, messageID: messageID)
+        let host = captureHostRequestSnapshot()
+        let selection = sessionLoadingID
         let model = selectedModel.map { Message.ModelInfo(providerID: $0.providerID, modelID: $0.modelID) }
         let agentName = agentNameForPrompt()
+        let directory = currentSession?.directory ?? effectiveProjectDirectory
+        let messageID = Self.makeServerID(prefix: "msg")
+        if sessions.first(where: { $0.id == sessionID })?.isArchived == true {
+            registerOutboundUserMessage(
+                text,
+                attachments: attachments,
+                messageID: messageID,
+                sessionID: sessionID,
+                hostProfileID: host.hostProfileID
+            )
+            do {
+                try await restoreSession(sessionID: sessionID)
+            } catch {
+                guard ownsSend(host: host, selection: selection, sessionID: sessionID) else {
+                    keepExistingUnsent(messageID)
+                    return false
+                }
+                messageStore.removeOutboundSendIfMatches(
+                    messageID: messageID,
+                    hostProfileID: host.hostProfileID,
+                    sessionID: sessionID
+                )
+                sendError = error.localizedDescription
+                return false
+            }
+            guard ownsSend(host: host, selection: selection, sessionID: sessionID),
+                  !sessionScope.confirmedMissingSessionIDs.contains(sessionID) else {
+                keepExistingUnsent(messageID)
+                return false
+            }
+            insertTrackedOutboundRow(messageID: messageID, sessionID: sessionID, hostProfileID: host.hostProfileID)
+        } else {
+            guard ownsSend(host: host, selection: selection, sessionID: sessionID) else {
+                keepUnsent(text, attachments: attachments, sessionID: sessionID, hostProfileID: host.hostProfileID)
+                return false
+            }
+            _ = appendOptimisticUserMessage(
+                text,
+                attachments: attachments,
+                messageID: messageID,
+                sessionID: sessionID,
+                hostProfileID: host.hostProfileID
+            )
+        }
+        let tempMessageID = messageID
         do {
             try await apiClient.promptAsync(
                 sessionID: sessionID,
@@ -188,14 +245,17 @@ extension AppState {
                 attachments: attachments,
                 agent: agentName,
                 model: model,
-                directory: currentSession?.directory ?? effectiveProjectDirectory
+                directory: directory
             )
             return true
         } catch {
-            let recovered = await recoverFromMissingCurrentSessionIfNeeded(error: error, requestedSessionID: sessionID)
-            // Keep the optimistic row and surface the failure inline under it
-            // (no modal alert); the text stays available for copy & resend.
-            let reason = recovered ? L10n.t(.errorSessionNotFound) : error.localizedDescription
+            let reason: String
+            if ownsSend(host: host, selection: selection, sessionID: sessionID) {
+                let recovered = await recoverFromMissingCurrentSessionIfNeeded(error: error, requestedSessionID: sessionID)
+                reason = recovered ? L10n.t(.errorSessionNotFound) : error.localizedDescription
+            } else {
+                reason = error.localizedDescription
+            }
             messageStore.markSendFailed(messageID: tempMessageID, reason: reason)
             messageStore.untrackPendingOptimisticMessages([tempMessageID])
             return false
@@ -236,20 +296,100 @@ extension AppState {
             .joined(separator: "\n\n")
     }
 
-    nonisolated static func makeServerID(prefix: String) -> String {
-        "\(prefix)_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+    nonisolated static func makeServerID(prefix: String, timestamp: Int = Int(Date().timeIntervalSince1970 * 1000)) -> String {
+        OrderedServerID.make(prefix: prefix, timestamp: timestamp)
+    }
+
+    nonisolated static func makeServerIDs(prefix: String, count: Int, timestamp: Int) -> [String] {
+        OrderedServerID.makeBatch(prefix: prefix, count: count, timestamp: timestamp)
+    }
+
+    private func ownsSend(host: HostRequestSnapshot, selection: UUID, sessionID: String) -> Bool {
+        isCurrentHostRequest(host) && sessionLoadingID == selection && currentSessionID == sessionID
+    }
+
+    private func acceptsMessageSnapshot(
+        host: HostRequestSnapshot,
+        selection: UUID,
+        sessionID: String,
+        revisionAtStart: UInt64,
+        requestSequence: UInt64
+    ) -> Bool {
+        isCurrentHostRequest(host)
+            && sessionLoadingID == selection
+            && Self.shouldApplySessionScopedResult(requestedSessionID: sessionID, currentSessionID: currentSessionID)
+            && requestSequence >= acceptedMessageSnapshotSequence
+            && messageStore.liveRevision == revisionAtStart
+    }
+
+    private func keepUnsent(_ text: String, attachments: [ComposerImageAttachment], sessionID: String, hostProfileID: UUID) {
+        let messageID = appendOptimisticUserMessage(
+            text,
+            attachments: attachments,
+            sessionID: sessionID,
+            hostProfileID: hostProfileID
+        )
+        guard !messageID.isEmpty else { return }
+        keepExistingUnsent(messageID)
+    }
+
+    private func keepExistingUnsent(_ messageID: String) {
+        messageStore.markSendFailed(messageID: messageID, reason: L10n.t(.chatSendFailed))
+        messageStore.untrackPendingOptimisticMessages([messageID])
+    }
+
+    private func registerOutboundUserMessage(
+        _ text: String,
+        attachments: [ComposerImageAttachment],
+        messageID: String,
+        sessionID: String,
+        hostProfileID: UUID
+    ) {
+        let row = optimisticUserRow(text, attachments: attachments, messageID: messageID, sessionID: sessionID)
+        messageStore.rememberOutboundSend(hostProfileID: hostProfileID, sessionID: sessionID, row: row)
+    }
+
+    private func insertTrackedOutboundRow(messageID: String, sessionID: String, hostProfileID: UUID) {
+        guard currentSessionID == sessionID, currentHostProfileID == hostProfileID else { return }
+        guard let row = messageStore.outboundRows(hostProfileID: hostProfileID, sessionID: sessionID).first(where: { $0.info.id == messageID }) else { return }
+        guard !messages.contains(where: { $0.info.id == messageID }) else { return }
+        messages.append(row)
+        partsByMessage[messageID] = row.parts
     }
 
     @discardableResult
-    func appendOptimisticUserMessage(_ text: String, attachments: [ComposerImageAttachment] = [], messageID: String? = nil) -> String {
-        guard let sessionID = currentSessionID else { return "" }
-        let now = Int(Date().timeIntervalSince1970 * 1000)
+    func appendOptimisticUserMessage(
+        _ text: String,
+        attachments: [ComposerImageAttachment] = [],
+        messageID: String? = nil,
+        sessionID explicitSessionID: String? = nil,
+        hostProfileID: UUID? = nil
+    ) -> String {
+        let sessionID = explicitSessionID ?? currentSessionID
+        guard let sessionID, !sessionID.isEmpty else { return "" }
+        let hostProfileID = hostProfileID ?? currentHostProfileID
         let messageID = messageID ?? "temp-user-\(UUID().uuidString)"
+        let row = optimisticUserRow(text, attachments: attachments, messageID: messageID, sessionID: sessionID)
+        if currentSessionID == sessionID && currentHostProfileID == hostProfileID {
+            messages.append(row)
+            partsByMessage[messageID] = row.parts
+        }
+        messageStore.rememberOutboundSend(hostProfileID: hostProfileID, sessionID: sessionID, row: row)
+        return messageID
+    }
+
+    private func optimisticUserRow(
+        _ text: String,
+        attachments: [ComposerImageAttachment],
+        messageID: String,
+        sessionID: String
+    ) -> MessageWithParts {
+        let now = Int(Date().timeIntervalSince1970 * 1000)
         let message = Message(
             id: messageID,
             sessionID: sessionID,
             role: "user",
-            parentID: messages.last?.info.id,
+            parentID: currentSessionID == sessionID ? messages.last?.info.id : nil,
             providerID: nil,
             modelID: nil,
             model: nil,
@@ -291,11 +431,7 @@ extension AppState {
                 url: attachment.dataURL
             ))
         }
-        let row = MessageWithParts(info: message, parts: parts)
-        messages.append(row)
-        partsByMessage[messageID] = parts
-        messageStore.trackPendingOptimisticMessage(messageID)
-        return messageID
+        return MessageWithParts(info: message, parts: parts)
     }
 
     func removeMessage(id: String) {
