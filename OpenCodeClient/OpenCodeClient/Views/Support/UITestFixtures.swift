@@ -24,6 +24,8 @@ enum UITestFixtures {
             || hasUITestModelShortlistFixture
             || hasHostEditorCredentialFixture
             || SessionScrollFixture.isActive
+            || FileSearchFixture.isActive
+            || FileContentReuseFixture.isActive
     }
 
     static var hasUITestWebPreviewModeFixture: Bool {
@@ -129,6 +131,16 @@ enum UITestFixtures {
         if QuestionRecoveryFixture.isActive {
             let state = QuestionRecoveryFixture.makeAppState()
             QuestionRecoveryFixture.apply(to: state)
+            return state
+        }
+
+        if FileContentReuseFixture.isActive {
+            return FileContentReuseFixture.makeAppState()
+        }
+
+        if FileSearchFixture.isActive {
+            let state = FileSearchFixture.makeAppState()
+            FileSearchFixture.apply(to: state)
             return state
         }
 

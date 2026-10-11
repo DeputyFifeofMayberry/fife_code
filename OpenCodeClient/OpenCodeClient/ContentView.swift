@@ -167,6 +167,17 @@ struct ContentView: View {
     }
 
     var body: some View {
+        if FileContentReuseFixture.isActive {
+            FileContentReuseHost(state: state)
+        } else if FileSearchFixture.routesSplitHost {
+            FileSearchSplitHost(state: state)
+        } else {
+            standardFixtureBody
+        }
+    }
+
+    @ViewBuilder
+    private var standardFixtureBody: some View {
         #if DEBUG
         if UITestFixtures.hasUITestWebPreviewRetryFixture {
             webPreviewRetryFixtureView
@@ -199,6 +210,14 @@ struct ContentView: View {
 
     private var mainBody: some View {
         rootLayout
+        .overlay(alignment: .bottomLeading) {
+            if FileSearchFixture.isActive {
+                Text(FileSearchFixture.probe.summary)
+                    .font(.system(size: 1))
+                    .accessibilityIdentifier("file-search-probe")
+                    .allowsHitTesting(false)
+            }
+        }
         .task {
             state.cleanupClientCapabilityCallbacks()
             if UITestFixtures.hasUITestDeepLinkFixture,
@@ -473,21 +492,7 @@ private struct TabletFilesColumn: View {
                     FileContentView(state: state, filePath: path, workspaceDirectory: state.previewFileWorkspaceDirectory)
                 } else {
                     FileTreeView(state: state, forceSplitPreview: true)
-                        .searchable(text: $state.fileSearchQuery, prompt: L10n.t(.appSearchFiles))
-                        .onSubmit(of: .search) {
-                            Task { await state.searchFiles(query: state.fileSearchQuery) }
-                        }
-                        .onChange(of: state.fileSearchQuery) { _, newValue in
-                            if newValue.isEmpty {
-                                state.fileSearchResults = []
-                            } else {
-                                Task {
-                                    try? await Task.sleep(for: .milliseconds(300))
-                                    guard !Task.isCancelled else { return }
-                                    await state.searchFiles(query: newValue)
-                                }
-                            }
-                        }
+                        .fileSearchQueryHandlers(state: state)
                         .navigationTitle(L10n.t(.navFiles))
                         .navigationBarTitleDisplayMode(.inline)
                 }

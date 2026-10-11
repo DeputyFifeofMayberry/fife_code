@@ -19,6 +19,49 @@ struct FileTreeView: View {
     }
 
     var body: some View {
+        Group {
+            switch state.fileSearchListState {
+            case .tree:
+                treeList
+            case .loading:
+                ProgressView(L10n.t(.appLoading))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("file-search-loading")
+            case .empty:
+                ContentUnavailableView(L10n.t(.fileNoContent), systemImage: "magnifyingglass")
+                    .accessibilityIdentifier("file-search-empty")
+            case .failed(let message):
+                ContentUnavailableView(
+                    L10n.t(.appError),
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(message ?? "")
+                )
+                .accessibilityIdentifier("file-search-failed")
+            case .results(let paths):
+                searchResultList(paths)
+            }
+        }
+        .navigationDestination(for: String.self) { path in
+            FileContentView(state: state, filePath: path, workspaceDirectory: openedWorkspaceDirectory)
+        }
+        .onAppear {
+            state.discardUnownedFileSearch()
+        }
+        .onChange(of: state.captureHostRequestSnapshot()) { _, _ in
+            state.discardUnownedFileSearch()
+            Task { await state.ensureFileRootMatchesCurrentScope() }
+        }
+        .onChange(of: state.effectiveProjectDirectory) { _, _ in
+            state.discardUnownedFileSearch()
+            Task { await state.ensureFileRootMatchesCurrentScope() }
+        }
+    }
+
+    private var openedWorkspaceDirectory: String {
+        state.effectiveProjectDirectory ?? ""
+    }
+
+    private var treeList: some View {
         List {
             ForEach(visibleNodes, id: \.path) { item in
                 if item.node.type == "directory" {
@@ -31,42 +74,65 @@ struct FileTreeView: View {
                     .onTapGesture {
                         Task { await loadAndExpand(item.node.path) }
                     }
-                } else {
-                    if useSplitPreview {
-                        Button {
-                            state.previewFilePath = item.node.path
-                            state.previewFileWorkspaceDirectory = state.currentSession?.directory
-                        } label: {
-                            FileRow(
-                                node: item.node,
-                                indent: item.indent,
-                                status: state.fileStatusMap[item.node.path])
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        NavigationLink(value: item.node.path) {
-                            FileRow(
-                                node: item.node,
-                                indent: item.indent,
-                                status: state.fileStatusMap[item.node.path])
-                        }
+                } else if useSplitPreview {
+                    Button {
+                        openFile(item.node.path)
+                    } label: {
+                        FileRow(
+                            node: item.node,
+                            indent: item.indent,
+                            status: state.fileStatusMap[item.node.path])
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("file-tree-row-\(item.node.path)")
+                } else {
+                    NavigationLink(value: item.node.path) {
+                        FileRow(
+                            node: item.node,
+                            indent: item.indent,
+                            status: state.fileStatusMap[item.node.path])
+                    }
+                    .accessibilityIdentifier("file-tree-row-\(item.node.path)")
                 }
             }
         }
         .listStyle(.plain)
-        .navigationDestination(for: String.self) { path in
-            FileContentView(state: state, filePath: path, workspaceDirectory: state.currentSession?.directory)
-        }
+        .accessibilityIdentifier("file-tree")
         .onAppear {
-            if state.fileTreeRoot.isEmpty {
-                Task { await state.loadFileTree() }
-            }
+            Task { await state.ensureFileRootMatchesCurrentScope() }
         }
         .refreshable {
             await state.loadFileTree()
             await state.loadFileStatus()
         }
+    }
+
+    private func searchResultList(_ paths: [String]) -> some View {
+        List {
+            ForEach(paths, id: \.self) { path in
+                if useSplitPreview {
+                    Button {
+                        openFile(path)
+                    } label: {
+                        SearchResultRow(path: path)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("file-search-result-\(path)")
+                } else {
+                    NavigationLink(value: path) {
+                        SearchResultRow(path: path)
+                    }
+                    .accessibilityIdentifier("file-search-result-\(path)")
+                }
+            }
+        }
+        .listStyle(.plain)
+        .accessibilityIdentifier("file-search-results")
+    }
+
+    private func openFile(_ path: String) {
+        state.previewFilePath = path
+        state.previewFileWorkspaceDirectory = openedWorkspaceDirectory
     }
 
     private var visibleNodes: [TreeNodeItem] {
@@ -81,17 +147,33 @@ struct FileTreeView: View {
             }
             return result
         }
-        return flatten(state.fileTreeRoot, indent: 0)
+        return flatten(state.visibleFileTreeRoot, indent: 0)
     }
 
     private func loadAndExpand(_ path: String) async {
         guard !isLoadingChildren.contains(path) else { return }
-        isLoadingChildren.insert(path)
+        let willExpand = !state.isFileExpanded(path)
+        let cached = state.cachedChildren(for: path)
         state.toggleFileExpanded(path)
-        if state.cachedChildren(for: path) == nil {
-            _ = await state.loadFileChildren(path: path)
-        }
+        guard willExpand, cached == nil else { return }
+        isLoadingChildren.insert(path)
+        _ = await state.loadFileChildren(path: path)
         isLoadingChildren.remove(path)
+    }
+}
+
+private struct SearchResultRow: View {
+    let path: String
+
+    var body: some View {
+        HStack(spacing: DesignSpacing.sm) {
+            Image(systemName: "doc.text")
+                .foregroundStyle(DesignColors.Neutral.text)
+            Text(path)
+                .font(DesignTypography.body)
+                .lineLimit(1)
+            Spacer()
+        }
     }
 }
 

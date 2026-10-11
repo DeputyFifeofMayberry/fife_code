@@ -11,23 +11,45 @@ struct FilesTabView: View {
     var body: some View {
         NavigationStack {
             FileTreeView(state: state)
-                .searchable(text: $state.fileSearchQuery, prompt: L10n.t(.appSearchFiles))
-                .onSubmit(of: .search) {
-                    Task { await state.searchFiles(query: state.fileSearchQuery) }
-                }
-                .onChange(of: state.fileSearchQuery) { _, newValue in
-                    if newValue.isEmpty {
-                        state.fileSearchResults = []
-                    } else {
-                        Task {
-                            try? await Task.sleep(for: .milliseconds(300))
-                            guard !Task.isCancelled else { return }
-                            await state.searchFiles(query: newValue)
-                        }
-                    }
-                }
+                .fileSearchQueryHandlers(state: state)
             .navigationTitle(L10n.t(.navFiles))
             .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+extension View {
+    func fileSearchQueryHandlers(state: AppState) -> some View {
+        modifier(FileSearchQueryModifier(state: state))
+    }
+}
+
+private struct FileSearchQueryModifier: ViewModifier {
+    @Bindable var state: AppState
+
+    func body(content: Content) -> some View {
+        if FileSearchFixture.isActive {
+            content
+                .searchable(
+                    text: $state.fileSearchQuery,
+                    placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: L10n.t(.appSearchFiles)
+                )
+                .onSubmit(of: .search) {
+                    Task { await state.submitFileSearch() }
+                }
+                .onChange(of: state.fileSearchQuery) { _, newValue in
+                    state.fileSearchQueryChanged(newValue)
+                }
+        } else {
+            content
+                .searchable(text: $state.fileSearchQuery, prompt: L10n.t(.appSearchFiles))
+                .onSubmit(of: .search) {
+                    Task { await state.submitFileSearch() }
+                }
+                .onChange(of: state.fileSearchQuery) { _, newValue in
+                    state.fileSearchQueryChanged(newValue)
+                }
         }
     }
 }
