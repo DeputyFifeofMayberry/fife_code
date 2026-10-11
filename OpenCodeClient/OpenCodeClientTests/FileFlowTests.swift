@@ -349,7 +349,7 @@ private struct FileFlowHarness {
         state = AppState(
             apiClient: api,
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: defaults),
             userDefaults: defaults,
             hostCredentialAccess: HostCredentialAccess(
                 save: { _, _ in },

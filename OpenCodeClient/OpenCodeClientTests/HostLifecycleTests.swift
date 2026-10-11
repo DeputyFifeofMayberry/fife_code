@@ -64,9 +64,10 @@ struct HostLifecycleTests {
         let state = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: defaults),
             clientCapabilityStore: ClientCapabilityCallbackStore(rootDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(suite, isDirectory: true)),
-            userDefaults: defaults
+            userDefaults: defaults,
+            hostCredentialAccess: .noExternal
         )
         #expect(state.draftText(for: "s1") == "old-draft")
         #expect(state.selectedModelIDBySessionID["s1"] == "openai/old")
@@ -243,9 +244,10 @@ struct HostLifecycleTests {
         let bad = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: badDefaults),
             clientCapabilityStore: tempStore(badSuite),
-            userDefaults: badDefaults
+            userDefaults: badDefaults,
+            hostCredentialAccess: .noExternal
         )
         #expect(bad.hostProfileBlobUnreadable)
         #expect(bad.hostProfileLoadError == L10n.t(.hostConnectionErrorGeneric))
@@ -259,9 +261,10 @@ struct HostLifecycleTests {
         let migrated = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: missingDefaults),
             clientCapabilityStore: tempStore(missingSuite),
-            userDefaults: missingDefaults
+            userDefaults: missingDefaults,
+            hostCredentialAccess: .noExternal
         )
         #expect(!migrated.hostProfileBlobUnreadable)
         #expect(migrated.hostProfileLoadError == nil)
@@ -349,12 +352,12 @@ struct HostLifecycleTests {
     @Test @MainActor func activatingHostClosesInFlightSSHConnect() async throws {
         let previousSSHConfig = UserDefaults.standard.object(forKey: "sshTunnelConfig")
         defer { restoreSSHConfig(previousSSHConfig) }
-        let ssh = SSHTunnelManager()
+        let harness = LifecycleHarness()
+        let ssh = harness.state.sshTunnelManager
         let probe = SSHConnectProbe()
         ssh.tunnelConnector = { config in
             await probe.open(config)
         }
-        let harness = LifecycleHarness(ssh: ssh)
         defer { harness.cleanup() }
         ssh.config = SSHTunnelConfig(isEnabled: true, host: "a.example", port: 22, username: "opencode", remotePort: 19001)
         let connecting = Task { await ssh.connect() }
@@ -456,9 +459,10 @@ struct HostLifecycleTests {
         let restarted = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: harness.defaults),
             clientCapabilityStore: tempStore("\(harness.suite).restart"),
-            userDefaults: harness.defaults
+            userDefaults: harness.defaults,
+            hostCredentialAccess: .noExternal
         )
         defer {
             restarted.disconnectSSE()
@@ -744,9 +748,10 @@ struct HostLifecycleTests {
         let migrated = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: emptyDefaults),
             clientCapabilityStore: tempStore(emptySuite),
-            userDefaults: emptyDefaults
+            userDefaults: emptyDefaults,
+            hostCredentialAccess: .noExternal
         )
         defer {
             migrated.disconnectSSE()
@@ -772,7 +777,7 @@ struct HostLifecycleTests {
         let saveFailed = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: saveDefaults),
             clientCapabilityStore: tempStore(saveSuite),
             userDefaults: saveDefaults,
             hostCredentialAccess: saveFake.access()
@@ -788,7 +793,7 @@ struct HostLifecycleTests {
         let saveRetried = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: saveDefaults),
             clientCapabilityStore: tempStore("\(saveSuite).retry"),
             userDefaults: saveDefaults,
             hostCredentialAccess: saveFake.access()
@@ -815,7 +820,7 @@ struct HostLifecycleTests {
         let loadFailed = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: loadDefaults),
             clientCapabilityStore: tempStore(loadSuite),
             userDefaults: loadDefaults,
             hostCredentialAccess: loadFake.access()
@@ -830,7 +835,7 @@ struct HostLifecycleTests {
         let loadRetried = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: loadDefaults),
             clientCapabilityStore: tempStore("\(loadSuite).retry"),
             userDefaults: loadDefaults,
             hostCredentialAccess: loadFake.access()
@@ -862,9 +867,10 @@ struct HostLifecycleTests {
         let blobFailed = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: blobDefaults),
             clientCapabilityStore: tempStore(blobSuite),
-            userDefaults: blobDefaults
+            userDefaults: blobDefaults,
+            hostCredentialAccess: .noExternal
         )
         defer {
             blobFailed.disconnectSSE()
@@ -886,9 +892,10 @@ struct HostLifecycleTests {
         let blobRecovered = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: blobDefaults),
             clientCapabilityStore: tempStore("\(blobSuite).retry"),
-            userDefaults: blobDefaults
+            userDefaults: blobDefaults,
+            hostCredentialAccess: .noExternal
         )
         defer {
             blobRecovered.disconnectSSE()
@@ -922,7 +929,7 @@ struct HostLifecycleTests {
         let legacyFailed = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: legacyDefaults),
             clientCapabilityStore: tempStore(legacySuite),
             userDefaults: legacyDefaults,
             hostCredentialAccess: legacyFake.access()
@@ -946,7 +953,7 @@ struct HostLifecycleTests {
         let legacyRecovered = AppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
+            sshTunnelManager: SSHTunnelManager(defaults: legacyDefaults),
             clientCapabilityStore: tempStore("\(legacySuite).retry"),
             userDefaults: legacyDefaults,
             hostCredentialAccess: legacyFake.access()
@@ -982,10 +989,11 @@ private func assertUnreadableBlobPreserved(_ blob: Data, selectedID: UUID) {
     let state = AppState(
         apiClient: MockAPIClient(),
         sseClient: MockSSEClient(),
-        sshTunnelManager: SSHTunnelManager(),
+        sshTunnelManager: SSHTunnelManager(defaults: defaults),
         clientCapabilityStore: tempStore(suite),
         userDefaults: defaults
-    )
+    ,
+            hostCredentialAccess: .noExternal)
     defer {
         state.disconnectSSE()
         state.sshTunnelManager.disconnect()
@@ -1055,13 +1063,14 @@ private struct LifecycleHarness {
         defaults = UserDefaults(suiteName: suite)!
         storeRoot = FileManager.default.temporaryDirectory.appendingPathComponent(suite, isDirectory: true)
         previousSSHConfig = UserDefaults.standard.object(forKey: "sshTunnelConfig")
-        let tunnel = ssh ?? SSHTunnelManager()
+        let tunnel = ssh ?? SSHTunnelManager(defaults: defaults)
         state = AppState(
             apiClient: api,
             sseClient: MockSSEClient(),
             sshTunnelManager: tunnel,
             clientCapabilityStore: ClientCapabilityCallbackStore(rootDirectory: storeRoot),
-            userDefaults: defaults
+            userDefaults: defaults,
+            hostCredentialAccess: .noExternal
         )
     }
 

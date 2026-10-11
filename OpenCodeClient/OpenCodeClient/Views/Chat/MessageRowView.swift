@@ -659,6 +659,25 @@ struct MessageRowView: View {
             }
             .padding(.leading, 4)
         }
+        .overlay(alignment: .topLeading) {
+            Text(verbatim: userSendStatus)
+                .font(.system(size: 1))
+                .frame(width: 1, height: 1)
+                .foregroundStyle(.primary.opacity(0.01))
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("user-message-\(message.info.id)")
+                .accessibilityAddTraits(.updatesFrequently)
+        }
+    }
+
+    private var userSendStatus: String {
+        if state.messageStore.failedSendReasonsByID[message.info.id] != nil {
+            return "failed"
+        }
+        if state.messageStore.isPendingOptimisticMessage(message.info.id) {
+            return "pending"
+        }
+        return "confirmed"
     }
 
     private var assistantMessageView: some View {

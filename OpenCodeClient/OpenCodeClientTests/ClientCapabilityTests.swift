@@ -154,19 +154,13 @@ struct ClientCapabilityPermissionTests {
     @Test @MainActor func allowOnceLaunchesWithoutPersistingPermission() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("client-capability-state-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        let previous = UserDefaults.standard.object(forKey: AppState.healthExportPermissionKey)
-        UserDefaults.standard.removeObject(forKey: AppState.healthExportPermissionKey)
-        defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: AppState.healthExportPermissionKey) }
-            else { UserDefaults.standard.removeObject(forKey: AppState.healthExportPermissionKey) }
-        }
+        let standardBefore = UserDefaults.standard.string(forKey: AppState.healthExportPermissionKey)
 
         var openedURL: URL?
         let store = ClientCapabilityCallbackStore(rootDirectory: root)
-        let state = AppState(
+        let state = makeIsolatedAppState(
             apiClient: MockAPIClient(),
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
             clientCapabilityStore: store,
             clientCapabilityURLOpener: { url in openedURL = url; return true }
         )
@@ -183,6 +177,7 @@ struct ClientCapabilityPermissionTests {
 
         #expect(state.pendingClientCapabilityRequest == nil)
         #expect(state.healthExportPermission == .ask)
+        #expect(UserDefaults.standard.string(forKey: AppState.healthExportPermissionKey) == standardBefore)
         #expect(openedURL?.scheme == "healthquantification")
         #expect(try store.hasActiveRecord(for: .healthExportAll))
     }
@@ -195,10 +190,9 @@ struct ClientCapabilityContinuationTests {
         let store = ClientCapabilityCallbackStore(rootDirectory: root)
         let api = MockAPIClient()
         let speech = MockCarSpeechOutput()
-        let state = AppState(
+        let state = makeIsolatedAppState(
             apiClient: api,
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
             carSpeechOutput: speech,
             clientCapabilityStore: store,
             clientCapabilityURLOpener: { _ in true }
@@ -249,10 +243,9 @@ struct ClientCapabilityContinuationTests {
         let store = ClientCapabilityCallbackStore(rootDirectory: root)
         let api = MockAPIClient()
         let speech = MockCarSpeechOutput()
-        let state = AppState(
+        let state = makeIsolatedAppState(
             apiClient: api,
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
             carSpeechOutput: speech,
             clientCapabilityStore: store,
             clientCapabilityURLOpener: { _ in true }
@@ -313,10 +306,9 @@ struct ClientCapabilityContinuationTests {
         let store = ClientCapabilityCallbackStore(rootDirectory: root)
         let api = MockAPIClient()
         let speech = MockCarSpeechOutput()
-        let state = AppState(
+        let state = makeIsolatedAppState(
             apiClient: api,
             sseClient: MockSSEClient(),
-            sshTunnelManager: SSHTunnelManager(),
             carSpeechOutput: speech,
             clientCapabilityStore: store,
             clientCapabilityURLOpener: { _ in true }

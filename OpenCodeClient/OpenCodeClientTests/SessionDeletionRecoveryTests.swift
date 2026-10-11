@@ -524,9 +524,10 @@ private func makeState(_ api: SessionRecoveryAPIClient) -> (AppState, UserDefaul
     let state = AppState(
         apiClient: api,
         sseClient: MockSSEClient(),
-        sshTunnelManager: SSHTunnelManager(),
+        sshTunnelManager: SSHTunnelManager(defaults: defaults),
         userDefaults: defaults
-    )
+    ,
+            hostCredentialAccess: .noExternal)
     return (state, defaults, suite)
 }
 

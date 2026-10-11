@@ -20,10 +20,9 @@ enum TurnStabilityFixture {
     }
 
     static func makeAppState() -> AppState {
-        L10n.languagePreference = .en
-        return AppState(
+        UITestFixtures.makeFixtureAppState(
             apiClient: StubClient(),
-            userDefaults: UserDefaults(suiteName: "opencode.uitest.turn-stability.\(UUID().uuidString)")!
+            label: "turn-stability"
         )
     }
 

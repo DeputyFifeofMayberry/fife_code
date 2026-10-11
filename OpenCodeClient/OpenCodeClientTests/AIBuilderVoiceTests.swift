@@ -44,43 +44,38 @@ private actor SpeechSenderTestRecorder {
 struct SpeechRecognitionDefaultsTests {
 
     @Test @MainActor func speechRecognitionDefaultPromptAndTerminology() async {
-        // Clear stored values so AppState falls back to defaults
-        UserDefaults.standard.removeObject(forKey: "aiBuilderCustomPrompt")
-        UserDefaults.standard.removeObject(forKey: "aiBuilderTerminology")
-        let state = AppState()
+        let state = makeIsolatedAppState()
         #expect(state.aiBuilderCustomPrompt.contains("snake_case"))
         #expect(state.aiBuilderCustomPrompt.contains("lowercase"))
         #expect(state.aiBuilderTerminology == "adhoc_jobs, life_consulting, survey_sessions, thought_review")
     }
 
     @Test @MainActor func speechRecognitionPersistence() async {
-        let state = AppState()
+        let promptBefore = UserDefaults.standard.string(forKey: AppState.aiBuilderCustomPromptKey)
+        let terminologyBefore = UserDefaults.standard.string(forKey: AppState.aiBuilderTerminologyKey)
+        let defaults = makeIsolatedUserDefaults()
+        let state = makeIsolatedAppState(userDefaults: defaults)
         state.aiBuilderCustomPrompt = "test prompt"
         state.aiBuilderTerminology = "foo, bar"
-        #expect(state.aiBuilderCustomPrompt == "test prompt")
-        #expect(state.aiBuilderTerminology == "foo, bar")
-        // Restore defaults for other tests
-        UserDefaults.standard.removeObject(forKey: "aiBuilderCustomPrompt")
-        UserDefaults.standard.removeObject(forKey: "aiBuilderTerminology")
+        let reloaded = makeIsolatedAppState(userDefaults: defaults)
+        #expect(reloaded.aiBuilderCustomPrompt == "test prompt")
+        #expect(reloaded.aiBuilderTerminology == "foo, bar")
+        #expect(UserDefaults.standard.string(forKey: AppState.aiBuilderCustomPromptKey) == promptBefore)
+        #expect(UserDefaults.standard.string(forKey: AppState.aiBuilderTerminologyKey) == terminologyBefore)
     }
 
     @Test @MainActor func recordingStrategyPersistsAndDefaultsToGPTLive() async {
-        let oldValue = UserDefaults.standard.string(forKey: AppState.aiBuilderRecordingStrategyKey)
-        UserDefaults.standard.removeObject(forKey: AppState.aiBuilderRecordingStrategyKey)
-        defer {
-            if let oldValue {
-                UserDefaults.standard.set(oldValue, forKey: AppState.aiBuilderRecordingStrategyKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: AppState.aiBuilderRecordingStrategyKey)
-            }
-        }
-        let defaultState = AppState()
+        let key = AppState.aiBuilderRecordingStrategyKey
+        let standardBefore = UserDefaults.standard.string(forKey: key)
+        let defaults = makeIsolatedUserDefaults()
+        let defaultState = makeIsolatedAppState(userDefaults: defaults)
         #expect(defaultState.aiBuilderRecordingStrategy == .gptLiveTranscribe)
 
         for strategy in VoiceFlowRecordingStrategy.allCases {
             defaultState.aiBuilderRecordingStrategy = strategy
-            #expect(AppState().aiBuilderRecordingStrategy == strategy)
+            #expect(makeIsolatedAppState(userDefaults: defaults).aiBuilderRecordingStrategy == strategy)
         }
+        #expect(UserDefaults.standard.string(forKey: key) == standardBefore)
     }
 
     @Test func strategyRawValuesAndRealtimeCapabilityRemainStable() {
@@ -183,7 +178,7 @@ struct ChatComposerSpeechTests {
     @Test @MainActor func completedSpeechAfterSwitchUpdatesOnlySourceDraft() {
         let sourceSessionID = "speech-source"
         let destinationSessionID = "speech-destination"
-        let state = AppState()
+        let state = makeIsolatedAppState()
         defer {
             state.setDraftText("", for: sourceSessionID)
             state.setDraftText("", for: destinationSessionID)
@@ -353,7 +348,7 @@ struct ChatComposerSpeechTests {
 struct VoiceFlowKitIntegrationTests {
 
     @Test @MainActor func transcribeAudioThrowsMissingTokenWhenTokenEmpty() async {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.aiBuilderToken = "   "
         await #expect(throws: VoiceFlowError.missingToken) {
             _ = try await state.transcribeAudio(
@@ -365,7 +360,7 @@ struct VoiceFlowKitIntegrationTests {
     }
 
     @Test @MainActor func startRealtimeSpeechSessionThrowsMissingTokenWhenTokenEmpty() async {
-        let state = AppState()
+        let state = makeIsolatedAppState()
         state.aiBuilderToken = ""
         await #expect(throws: VoiceFlowError.missingToken) {
             _ = try await state.startRealtimeSpeechSession(strategy: .gptLiveTranscribe, surface: .car)

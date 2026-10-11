@@ -15,6 +15,12 @@ struct HostCredentialAccess {
         load: { key in try KeychainHelper.load(forKey: key) },
         delete: { key in try KeychainHelper.delete(key) }
     )
+
+    static let noExternal = HostCredentialAccess(
+        save: { _, _ in },
+        load: { _ in nil },
+        delete: { _ in }
+    )
 }
 
 extension AppState {

@@ -57,7 +57,7 @@ struct OpenCodeDeepLinkRoutingTests {
         let api = MockAPIClient()
         let target = makeSession(id: "ses_target", directory: "/tmp/target")
         await api.setSessionResult(target)
-        let state = AppState(apiClient: api, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: api, sseClient: MockSSEClient())
         state.isConnected = true
         state.currentSessionID = "ses_source"
         state.pendingDeepLink = .session(id: target.id)
@@ -79,7 +79,7 @@ struct OpenCodeDeepLinkRoutingTests {
         let api = MockAPIClient()
         let target = makeSession(id: "ses_default", directory: "/tmp/default")
         await api.setSessionResult(target)
-        let state = AppState(apiClient: api, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: api, sseClient: MockSSEClient())
         state.isConnected = true
         state.serverCurrentProjectWorktree = target.directory
         state.selectedProjectWorktree = "/tmp/old"
@@ -93,7 +93,7 @@ struct OpenCodeDeepLinkRoutingTests {
 
     @Test @MainActor func disconnectedRouteStaysPending() async {
         let api = MockAPIClient()
-        let state = AppState(apiClient: api, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: api, sseClient: MockSSEClient())
         state.isConnected = false
         state.pendingDeepLink = .session(id: "ses_later")
 
@@ -106,7 +106,7 @@ struct OpenCodeDeepLinkRoutingTests {
     @Test @MainActor func notFoundPreservesCurrentSession() async {
         let api = MockAPIClient()
         await api.setSessionError(APIError.httpError(statusCode: 404, data: Data()))
-        let state = AppState(apiClient: api, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: api, sseClient: MockSSEClient())
         state.isConnected = true
         state.currentSessionID = "ses_source"
         state.pendingDeepLink = .session(id: "ses_missing")
@@ -119,7 +119,7 @@ struct OpenCodeDeepLinkRoutingTests {
     }
 
     @Test @MainActor func invalidLinkDoesNotChangeSession() throws {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
         state.currentSessionID = "ses_source"
         let url = try #require(URL(string: "opencode://session/not-valid"))
 
@@ -131,7 +131,7 @@ struct OpenCodeDeepLinkRoutingTests {
     }
 
     @Test @MainActor func invalidLinkCancelsOlderPendingRoute() throws {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
         state.pendingDeepLink = .session(id: "ses_older")
         state.deepLinkRouteState = .pending(.session(id: "ses_older"))
         let previousRouteID = state.deepLinkRouteID
@@ -145,7 +145,7 @@ struct OpenCodeDeepLinkRoutingTests {
     }
 
     @Test @MainActor func invalidatingInFlightRouteKeepsPendingForNewHost() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: MockAPIClient(), sseClient: MockSSEClient())
         let link = OpenCodeDeepLink.session(id: "ses_target")
         state.pendingDeepLink = link
         state.deepLinkRouteState = .resolving(link)
@@ -163,7 +163,7 @@ struct OpenCodeDeepLinkRoutingTests {
         let target = makeSession(id: "ses_old_target", directory: "/tmp/target")
         let recent = makeSession(id: "ses_recent", directory: "/tmp/target")
         await api.setSessionsResult([recent])
-        let state = AppState(apiClient: api, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager())
+        let state = makeIsolatedAppState(apiClient: api, sseClient: MockSSEClient())
         state.isConnected = true
         state.sessions = [target]
         state.currentSessionID = target.id

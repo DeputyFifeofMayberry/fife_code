@@ -319,7 +319,8 @@ struct SessionTotalTokensTests {
 
     @Test @MainActor func prefersServerAggregate() {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [makeSession(id: "s1", tokens: Self.makeTokenInfo("""
         {"total":20142,"input":20000,"output":90,"reasoning":52}
         """))]
@@ -328,7 +329,8 @@ struct SessionTotalTokensTests {
 
     @Test @MainActor func fallsBackToCompleteWindowSum() {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [makeSession(id: "s1")]
         state.messages = [makeAssistantRow(id: "m1", total: 100), makeAssistantRow(id: "m2", total: 55)]
         state.hasMoreHistoryBySessionID["s1"] = false
@@ -337,7 +339,8 @@ struct SessionTotalTokensTests {
 
     @Test @MainActor func hidesSegmentForPartialWindowWithoutAggregate() {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [makeSession(id: "s1")]
         state.messages = [makeAssistantRow(id: "m1", total: 100)]
         state.hasMoreHistoryBySessionID["s1"] = true
@@ -346,7 +349,8 @@ struct SessionTotalTokensTests {
 
     @Test @MainActor func zeroAggregateFallsThroughToWindow() {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [makeSession(id: "s1", tokens: Self.makeTokenInfo("""
         {"total":0,"input":0,"output":0,"reasoning":0}
         """))]
@@ -404,7 +408,8 @@ struct SessionCacheHitRateTests {
     }
 
     @Test @MainActor func prefersServerAggregate() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         // Real wire shape: total = input + output + reasoning + cache.read,
         // with `input` counting only non-cached input.
         state.sessions = [makeSession(id: "s1", tokensJSON: """
@@ -416,7 +421,8 @@ struct SessionCacheHitRateTests {
     }
 
     @Test @MainActor func noCacheFieldsMeansZeroPercent() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [makeSession(id: "s1", tokensJSON: """
         {"total":250,"input":200,"output":40,"reasoning":10}
         """)]
@@ -428,7 +434,8 @@ struct SessionCacheHitRateTests {
     }
 
     @Test @MainActor func fallsBackToCompleteWindow() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [makeSession(id: "s1")]
         state.messages = [
             makeAssistantRow(id: "m1", tokensJSON: """
@@ -446,7 +453,8 @@ struct SessionCacheHitRateTests {
     }
 
     @Test @MainActor func partialWindowWithoutAggregateIsNil() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [makeSession(id: "s1")]
         state.messages = [
             makeAssistantRow(id: "m1", tokensJSON: """
@@ -458,7 +466,8 @@ struct SessionCacheHitRateTests {
     }
 
     @Test @MainActor func inputlessAggregateFallsThroughToWindow() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [makeSession(id: "s1", tokensJSON: """
         {"total":50,"input":0,"output":50,"reasoning":0,"cache":{"read":0,"write":0}}
         """)]
@@ -520,7 +529,8 @@ struct SSEStatsIncrementTests {
     @Test @MainActor func messageUpdatedUserRoleIncrementsRounds() async {
         let apiClient = MockAPIClient()
         await apiClient.setMessagesResult([Self.makeRow(messageID: "u1", role: "user", toolPartIDs: [])])
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -537,7 +547,8 @@ struct SSEStatsIncrementTests {
 
     @Test @MainActor func messageUpdatedOtherSessionDoesNotCount() async {
         let apiClient = MockAPIClient()
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.currentSessionID = "s1"
 
         await state.applySSEEventForTesting(Self.makeSSEEvent("""
@@ -549,7 +560,8 @@ struct SSEStatsIncrementTests {
     @Test @MainActor func toolPartEventIncrementsToolCallsOncePerPartID() async {
         let apiClient = MockAPIClient()
         await apiClient.setMessagesResult([Self.makeRow(messageID: "m1", role: "assistant", toolPartIDs: ["tp1"])])
-        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: apiClient, sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.currentSessionID = "s1"
 
         for status in ["pending", "running", "completed"] {
@@ -602,7 +614,8 @@ struct SessionSubagentRollupTests {
     }
 
     @Test @MainActor func groupContainsSelfAndAllDescendantsSelfFirst() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [
             makeSession(id: "main", tokensJSON: "{\"total\":100,\"input\":10,\"output\":40,\"reasoning\":10,\"cache\":{\"read\":40,\"write\":0}}"),
             makeSession(id: "child-a", parentID: "main", tokensJSON: "{\"total\":300,\"input\":30,\"output\":120,\"reasoning\":30,\"cache\":{\"read\":120,\"write\":0}}"),
@@ -617,7 +630,8 @@ struct SessionSubagentRollupTests {
     }
 
     @Test @MainActor func groupIsCycleSafe() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         // A mutual parentID cycle must terminate: neither session may be
         // appended twice or loop forever.
         state.sessions = [
@@ -630,7 +644,8 @@ struct SessionSubagentRollupTests {
     }
 
     @Test @MainActor func totalIncludesDescendantAggregates() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [
             makeSession(id: "main", tokensJSON: "{\"total\":100,\"input\":10,\"output\":40,\"reasoning\":10,\"cache\":{\"read\":40,\"write\":0}}"),
             makeSession(id: "child-a", parentID: "main", tokensJSON: "{\"total\":300,\"input\":30,\"output\":120,\"reasoning\":30,\"cache\":{\"read\":120,\"write\":0}}"),
@@ -643,7 +658,8 @@ struct SessionSubagentRollupTests {
     }
 
     @Test @MainActor func totalHidesWhenMainUnknownEvenWithSubagentData() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         // Main has no aggregate and a partial window: its own part is
         // unknowable, so the number hides even though a subagent has data.
         state.sessions = [
@@ -655,7 +671,8 @@ struct SessionSubagentRollupTests {
     }
 
     @Test @MainActor func mainWindowFallbackPlusSubagentAggregate() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [
             makeSession(id: "main"),
             makeSession(id: "child-a", parentID: "main", tokensJSON: "{\"total\":300,\"input\":30,\"output\":120,\"reasoning\":30,\"cache\":{\"read\":120,\"write\":0}}"),
@@ -681,7 +698,8 @@ struct SessionSubagentRollupTests {
     }
 
     @Test @MainActor func cacheHitRateIsComputedAcrossTheWholeTree() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [
             makeSession(id: "main", tokensJSON: "{\"total\":410,\"input\":100,\"output\":90,\"reasoning\":10,\"cache\":{\"read\":300,\"write\":0}}"),
             makeSession(id: "child-a", parentID: "main", tokensJSON: "{\"total\":500,\"input\":50,\"output\":90,\"reasoning\":10,\"cache\":{\"read\":450,\"write\":0}}"),
@@ -693,7 +711,8 @@ struct SessionSubagentRollupTests {
     }
 
     @Test @MainActor func cacheHitRateHidesWhenMainUnknown() {
-        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(), userDefaults: isolatedDefaults())
+        let state = AppState(apiClient: MockAPIClient(), sseClient: MockSSEClient(), sshTunnelManager: SSHTunnelManager(defaults: isolatedDefaults()), userDefaults: isolatedDefaults(),
+            hostCredentialAccess: .noExternal)
         state.sessions = [
             makeSession(id: "main"),
             makeSession(id: "child-a", parentID: "main", tokensJSON: "{\"total\":500,\"input\":50,\"output\":90,\"reasoning\":10,\"cache\":{\"read\":450,\"write\":0}}"),

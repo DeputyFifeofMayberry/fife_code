@@ -224,8 +224,11 @@ final class SSHTunnelManager: ObservableObject {
         didSet { saveConfig() }
     }
 
-    init() {
-        if let data = UserDefaults.standard.data(forKey: "sshTunnelConfig"),
+    private let configDefaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        configDefaults = defaults
+        if let data = defaults.data(forKey: "sshTunnelConfig"),
            let decoded = try? JSONDecoder().decode(SSHTunnelConfig.self, from: data) {
             self.config = decoded
         } else {
@@ -235,7 +238,7 @@ final class SSHTunnelManager: ObservableObject {
 
     private func saveConfig() {
         guard let data = try? JSONEncoder().encode(config) else { return }
-        UserDefaults.standard.set(data, forKey: "sshTunnelConfig")
+        configDefaults.set(data, forKey: "sshTunnelConfig")
     }
 
     var reverseTunnelCommand: String? {
@@ -307,11 +310,13 @@ final class SSHTunnelManager: ObservableObject {
     var tunnelConnector: (@MainActor (SSHTunnelConfig) async throws -> SSHOpenedTunnel)?
     var listenerReadyHook: (@MainActor () async throws -> Void)?
     private let localPort: NWEndpoint.Port = 4096
+    private let configDefaults: UserDefaults
 
     var connectedRemotePortForTesting: Int? { connectedRemotePort }
     
-    init() {
-        if let data = UserDefaults.standard.data(forKey: "sshTunnelConfig"),
+    init(defaults: UserDefaults = .standard) {
+        configDefaults = defaults
+        if let data = defaults.data(forKey: "sshTunnelConfig"),
            let decoded = try? JSONDecoder().decode(SSHTunnelConfig.self, from: data) {
             self.config = decoded
         } else {
@@ -322,7 +327,7 @@ final class SSHTunnelManager: ObservableObject {
     
     private func saveConfig() {
         guard let data = try? JSONEncoder().encode(config) else { return }
-        UserDefaults.standard.set(data, forKey: "sshTunnelConfig")
+        configDefaults.set(data, forKey: "sshTunnelConfig")
     }
 
     var reverseTunnelCommand: String? {

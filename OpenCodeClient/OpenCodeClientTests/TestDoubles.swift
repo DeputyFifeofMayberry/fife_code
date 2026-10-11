@@ -24,21 +24,40 @@ let testSeedPresets: [ModelPreset] = [
 ]
 
 @MainActor
+func makeIsolatedUserDefaults() -> UserDefaults {
+    let name = "opencode.tests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    defaults.removePersistentDomain(forName: name)
+    return defaults
+}
+
+@MainActor
 func makeIsolatedAppState(
     apiClient: APIClientProtocol = MockAPIClient(),
     sseClient: SSEClientProtocol = MockSSEClient(),
     sshTunnelManager: SSHTunnelManager? = nil,
     aiUsageQuotaClient: AIUsageQuotaClientProtocol? = nil,
-    carSpeechOutput: CarSpeechOutputProviding? = nil
+    carSpeechOutput: CarSpeechOutputProviding? = nil,
+    deepLinkSessionResolver: ((String) async throws -> Session)? = nil,
+    deepLinkHydratesSelection: Bool = true,
+    clientCapabilityStore: ClientCapabilityCallbackStore = .applicationSupport(),
+    clientCapabilityURLOpener: (@MainActor (URL) async -> Bool)? = nil,
+    userDefaults: UserDefaults? = nil,
+    hostCredentialAccess: HostCredentialAccess = .noExternal
 ) -> AppState {
-    let defaults = UserDefaults(suiteName: "opencode.tests.\(UUID().uuidString)")!
+    let defaults = userDefaults ?? makeIsolatedUserDefaults()
     return AppState(
         apiClient: apiClient,
         sseClient: sseClient,
-        sshTunnelManager: sshTunnelManager ?? SSHTunnelManager(),
+        sshTunnelManager: sshTunnelManager ?? SSHTunnelManager(defaults: defaults),
         aiUsageQuotaClient: aiUsageQuotaClient ?? AIUsageQuotaClient(),
         carSpeechOutput: carSpeechOutput,
-        userDefaults: defaults
+        deepLinkSessionResolver: deepLinkSessionResolver,
+        deepLinkHydratesSelection: deepLinkHydratesSelection,
+        clientCapabilityStore: clientCapabilityStore,
+        clientCapabilityURLOpener: clientCapabilityURLOpener,
+        userDefaults: defaults,
+        hostCredentialAccess: hostCredentialAccess
     )
 }
 
