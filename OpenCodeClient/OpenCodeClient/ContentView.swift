@@ -218,6 +218,13 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if TurnStabilityFixture.showsAppendControls {
+                TurnStabilityAppendControls(state: state)
+                    .padding(.trailing, 12)
+                    .padding(.bottom, 140)
+            }
+        }
         .overlay(alignment: .topTrailing) {
             if Tier4OfflineFixture.isActive {
                 Tier4OfflineControls()

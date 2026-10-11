@@ -27,6 +27,7 @@ enum UITestFixtures {
             || SessionScrollFixture.isActive
             || FileSearchFixture.isActive
             || FileContentReuseFixture.isActive
+            || TurnStabilityFixture.isActive
             || Tier4OfflineFixture.isActive
     }
 
@@ -166,6 +167,12 @@ enum UITestFixtures {
         if isUITestLaunch {
             L10n.useEphemeralLanguage(.en)
         }
+        if TurnStabilityFixture.isActive {
+            let state = TurnStabilityFixture.makeAppState()
+            TurnStabilityFixture.apply(to: state)
+            return state
+        }
+
         if Tier4OfflineFixture.isActive {
             let state = Tier4OfflineFixture.makeAppState()
             Tier4OfflineFixture.apply(to: state)

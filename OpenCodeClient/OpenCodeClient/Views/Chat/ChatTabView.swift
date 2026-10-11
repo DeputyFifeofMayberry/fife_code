@@ -78,25 +78,6 @@ enum ChatComposerInputBinding {
     }
 }
 
-private enum MessageGroupItem: Identifiable {
-    case user(MessageWithParts)
-    case assistantMerged([MessageWithParts])
-
-    var id: String {
-        switch self {
-        case .user(let m): return "user-\(m.info.id)"
-        case .assistantMerged(let msgs): return "assistant-\(msgs.map(\.info.id).joined(separator: "-"))"
-        }
-    }
-
-    var messageIDs: [String] {
-        switch self {
-        case .user(let m): return [m.info.id]
-        case .assistantMerged(let msgs): return msgs.map { $0.info.id }
-        }
-    }
-}
-
 private struct BottomMarkerMinYPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = .greatestFiniteMagnitude
 
@@ -418,33 +399,13 @@ struct ChatTabView: View {
 
     /// 合并同一 assistant turn 的连续 step-only 消息，使 tool 卡片在一个 grid 内连续显示
     private var messageGroups: [MessageGroupItem] {
-        let visibleMessages = AppState.visibleMessages(
-            state.messages,
-            revertMessageID: state.currentSession?.revert?.messageID,
-            pendingIDs: state.messageStore.pendingOptimisticMessageIDs
+        MessageGroupItem.grouped(
+            AppState.visibleMessages(
+                state.messages,
+                revertMessageID: state.currentSession?.revert?.messageID,
+                pendingIDs: state.messageStore.pendingOptimisticMessageIDs
+            )
         )
-        var result: [MessageGroupItem] = []
-        var i = 0
-        while i < visibleMessages.count {
-            let msg = visibleMessages[i]
-            if msg.info.isUser {
-                result.append(.user(msg))
-                i += 1
-                continue
-            }
-            var assistantBatch: [MessageWithParts] = []
-            while i < visibleMessages.count {
-                let m = visibleMessages[i]
-                if m.info.isUser { break }
-                assistantBatch.append(m)
-                i += 1
-                if m.parts.contains(where: { $0.isText }) { break }
-            }
-            if !assistantBatch.isEmpty {
-                result.append(.assistantMerged(assistantBatch))
-            }
-        }
-        return result
     }
 
     private var voiceRailMode: VoiceRailWaveformView.Mode {
@@ -930,12 +891,12 @@ struct ChatTabView: View {
                                                      )
                                                 case .assistantMerged(let msgs):
                                                     if let first = msgs.first {
-                                                        let merged = MessageWithParts(info: first.info, parts: msgs.flatMap(\.parts))
-                                                        let workspaceDirectory = workspaceDirectory(for: merged.info.sessionID)
+                                                        let workspaceDirectory = workspaceDirectory(for: first.info.sessionID)
                                                         MessageRowView(
                                                             state: state,
-                                                            message: merged,
-                                                            sessionTodos: state.sessionTodos[merged.info.sessionID] ?? [],
+                                                            message: first,
+                                                            turnMessages: msgs,
+                                                            sessionTodos: state.sessionTodos[first.info.sessionID] ?? [],
                                                               workspaceDirectory: workspaceDirectory,
                                                               onOpenResolvedPath: { openFileInChat($0) },
                                                               onOpenMarkdownResolvedPath: { openFileInChat($0, workspaceDirectory: workspaceDirectory) },
