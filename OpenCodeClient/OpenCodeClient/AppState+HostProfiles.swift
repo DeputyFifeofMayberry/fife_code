@@ -287,6 +287,8 @@ extension AppState {
 
     func beginHostTransportTransition(to id: UUID) {
         guard hostProfiles.contains(where: { $0.id == id }) else { return }
+        invalidateLocalCarTurn()
+        clearCarLastKnownServerWorktree()
         invalidateDeepLinkRoute(keepPending: true)
         hostRequestGeneration &+= 1
         sessionLoadingID = UUID()
