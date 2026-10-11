@@ -685,7 +685,11 @@ final class AppState {
     var projects: [Project] = []
     var isLoadingProjects: Bool = false
     /// Server's current project worktree (from GET /project/current). Used to detect mismatch with user selection.
-    var serverCurrentProjectWorktree: String? = nil
+    var serverCurrentProjectWorktree: String? {
+        get { _serverCurrentProjectWorktree }
+        set { noteServerCurrentProjectWorktree(newValue) }
+    }
+    var _serverCurrentProjectWorktree: String?
 
     /// When user selected a project but server's default differs: new sessions will be created in server's project.
     /// User should switch project in Web client first.
@@ -712,8 +716,12 @@ final class AppState {
     var selectedProjectWorktree: String? {
         get { _selectedProjectWorktree }
         set {
+            let previous = carContextKey
             _selectedProjectWorktree = newValue
             defaults.set(newValue, forKey: Self.selectedProjectWorktreeKey)
+            if carContextKey != previous {
+                invalidateCarTurnForRealProjectChange()
+            }
         }
     }
     var _selectedProjectWorktree: String?
@@ -721,8 +729,12 @@ final class AppState {
     var customProjectPath: String {
         get { _customProjectPath }
         set {
+            let previous = carContextKey
             _customProjectPath = newValue
             defaults.set(newValue, forKey: Self.customProjectPathKey)
+            if carContextKey != previous {
+                invalidateCarTurnForRealProjectChange()
+            }
         }
     }
     var _customProjectPath: String = ""
@@ -822,9 +834,12 @@ final class AppState {
     /// received. Internal so unit tests can pre-seed it and drive
     /// `checkSSEWatchdog()` deterministically.
     var sseLastFrameAt: Date?
-    /// Heartbeat watchdog task; same lifecycle as `sseTask` (launched after a
-    /// successful connect + bootstrap, cancelled when the stream ends).
+    /// Heartbeat watchdog for the current `sseConnectionToken` only.
     var sseWatchdogTask: Task<Void, Never>?
+    var sseConnectionToken: UInt64 = 0
+    var sseReconnectSleep: (TimeInterval) async -> Void = { seconds in
+        try? await Task.sleep(for: .seconds(seconds))
+    }
     nonisolated static let sseWatchdogCheckInterval: TimeInterval = 5
     nonisolated static let sseSilenceThreshold: TimeInterval = 20
 
@@ -835,6 +850,7 @@ final class AppState {
     var carError: String?
     var carActiveTurnID: UUID?
     var carActiveCapabilityCallbackID: String?
+    var carLastKnownServerWorktree: String?
     let carSpeechOutput: CarSpeechOutputProviding
     let clientCapabilityStore: ClientCapabilityCallbackStore
     let clientCapabilityURLOpener: @MainActor (URL) async -> Bool
