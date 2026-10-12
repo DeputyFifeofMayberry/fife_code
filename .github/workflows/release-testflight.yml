@@ -73,11 +73,19 @@ jobs:
         run: |
           PP_PATH="$RUNNER_TEMP/profile.mobileprovision"
           printf '%s' "$PROFILE_BASE64" | openssl base64 -d -A -out "$PP_PATH"
+          echo "profile size: $(wc -c < "$PP_PATH") bytes"
           PP_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PP_DIR"
           cp "$PP_PATH" "$PP_DIR/"
-          UUID="$(security cms -D -i "$PP_PATH" | /usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin)"
+          # security cms -D is flaky on CI; fall back to scanning the embedded
+          # plist (CMS SignedData stores the XML uncompressed inside the DER).
+          UUID="$(security cms -D -i "$PP_PATH" 2>/dev/null | /usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin 2>/dev/null || true)"
+          if [ -z "$UUID" ]; then
+            UUID="$(grep -aA1 '<key>UUID</key>' "$PP_PATH" | grep -o '<string>[A-Fa-f0-9-]*</string>' | head -1 | sed 's/<[^>]*>//g')"
+            echo "(used raw-scan fallback for UUID)"
+          fi
           echo "profile UUID: $UUID"
+          test -n "$UUID" || { echo "could not determine profile UUID"; exit 1; }
           echo "PROFILE_UUID=$UUID" >> "$GITHUB_ENV"
 
       - name: Write App Store Connect API key
