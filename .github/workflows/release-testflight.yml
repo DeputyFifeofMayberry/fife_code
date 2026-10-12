@@ -127,6 +127,8 @@ jobs:
             <string>$METHOD</string>
             <key>teamID</key>
             <string>$APPLE_TEAM_ID</string>
+            <key>destination</key>
+            <string>upload</string>
             <key>signingStyle</key>
             <string>manual</string>
             <key>signingCertificate</key>
@@ -173,7 +175,6 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/FifeCode.xcarchive" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -destination 'upload' \
             -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
