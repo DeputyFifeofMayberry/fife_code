@@ -546,11 +546,11 @@ nonisolated enum V2Mapper {
             byID[providerID] = ConfigProvider(id: providerID, name: providerID, models: models)
         }
 
-        let defaultProvider = defaultData
+        let defaultModel = defaultData
             .flatMap { try? envelopeObject($0) }
-            .flatMap { defaultProvider(from: $0["data"]) }
+            .flatMap { Self.defaultProvider(from: $0["data"]) }
 
-        return ProvidersResponse(providers: byID.values.sorted { $0.id < $1.id }, default: defaultProvider)
+        return ProvidersResponse(providers: byID.values.sorted { $0.id < $1.id }, default: defaultModel)
     }
 
     static func providerRegistry(modelData: Data, providerData: Data) -> ProviderRegistryResponse {
@@ -559,7 +559,7 @@ nonisolated enum V2Mapper {
         let providers = providerIDsOrdered(providerList, modelProviders: modelsByProvider)
             .map { id in
                 let name = providerList.first { $0.id == id }?.name ?? id
-                return ConfigProvider(id: id, name: name ?? id, models: modelsByProvider[id] ?? [:])
+                return ConfigProvider(id: id, name: name, models: modelsByProvider[id] ?? [:])
             }
         var connected = providerList.filter { $0.activation != "disabled" }.map(\.id)
         if connected.isEmpty {
