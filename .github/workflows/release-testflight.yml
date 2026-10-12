@@ -122,7 +122,7 @@ jobs:
             -H "Authorization: Bearer $H.$P.$SIG" \
             "https://api.appstoreconnect.apple.com/v1/apps?filter%5BbundleId%5D=com.deputyfife.opencode")
           STATUS=$(echo "$RESP" | tail -1 | cut -d: -f2)
-          BODY=$(echo "$RESP" | head -n -1)
+          BODY=$(echo "$RESP" | sed '$d')
           echo "ASC /v1/apps HTTP status: $STATUS"
           echo "$BODY" | grep -o '"bundleId":"[^"]*"' | sort -u || true
           COUNT=$(echo "$BODY" | grep -c '"bundleId":"com.deputyfife.opencode"' || true)
