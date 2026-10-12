@@ -148,13 +148,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           MARKETING_VERSION: ${{ inputs.marketing_version }}
         run: |
-          # Manual signing WITHOUT a forced specifier: the app target
-          # auto-selects the installed FifeCode profile (identity + bundle id
-          # match), and package targets sign with the bare identity - they
-          # reject explicitly specified profiles, but auto-selection skips
-          # them (they need no profile). No -allowProvisioningUpdates here:
-          # it would steer the archive at a development profile, and this
-          # team has no registered devices.
+          # The app target's build settings (project.pbxproj) carry Manual
+          # signing: Apple Distribution identity, team L8DHKJ934R, profile
+          # FifeCode. No CLI signing overrides - a global
+          # PROVISIONING_PROFILE_SPECIFIER breaks SPM package targets, and
+          # no -allowProvisioningUpdates (it steers at development profiles;
+          # this team has no registered devices).
           xcodebuild archive \
             -project OpenCodeClient/OpenCodeClient.xcodeproj \
             -scheme OpenCodeClient \
@@ -162,9 +161,7 @@ jobs:
             -archivePath "$RUNNER_TEMP/FifeCode.xcarchive" \
             -derivedDataPath .occlient/DerivedData \
             -quiet \
-            CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
             MARKETING_VERSION="${MARKETING_VERSION:-1.0}" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
 
