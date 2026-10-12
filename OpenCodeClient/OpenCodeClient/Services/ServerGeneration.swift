@@ -81,7 +81,7 @@ enum GenerationProbe {
         }
     }
 
-    fileprivate enum ProbeStep {
+    enum ProbeStep {
         case decided(GenerationDetection)
         case keepProbing
     }

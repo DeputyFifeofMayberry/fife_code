@@ -40,8 +40,8 @@ struct V2SSEFrameTests {
 @Suite(.serialized)
 @MainActor
 struct V2SSEDispatchTests {
-    private func makeV2State(mock: MockAPIClient = MockAPIClient()) async -> AppState {
-        let state = await makeIsolatedAppState(apiClient: mock)
+    private func makeV2State(mock: MockAPIClient = MockAPIClient()) -> AppState {
+        let state = makeIsolatedAppState(apiClient: mock)
         state.serverGeneration = .v2
         return state
     }
@@ -104,13 +104,13 @@ struct V2SSEDispatchTests {
     }
 
     @Test func sessionIdleFrameUpdatesStatusMap() async {
-        let state = await makeV2State()
+        let state = makeV2State()
         await state.applySSEEventForTesting(event("session.idle", ["sessionID": "ses_1"]))
         #expect(state.sessionStatuses["ses_1"]?.type == "idle")
     }
 
     @Test func sessionStatusFramePassesThrough() async {
-        let state = await makeV2State()
+        let state = makeV2State()
         await state.applySSEEventForTesting(event("session.status", ["sessionID": "ses_1", "status": ["type": "busy", "attempt": 1]]))
         #expect(state.sessionStatuses["ses_1"]?.type == "busy")
         #expect(state.sessionStatuses["ses_1"]?.attempt == 1)
@@ -128,7 +128,7 @@ struct V2SSEDispatchTests {
             parentID: nil, title: "New", version: "2",
             time: .init(created: 1, updated: 3, archived: nil), share: nil, summary: nil
         ))
-        let state = await makeV2State(mock: mock)
+        let state = makeV2State(mock: mock)
         state.sessions = [known]
         await state.applySSEEventForTesting(event("session.renamed", ["sessionID": "ses_1"]))
         #expect(state.sessions.first?.title == "New")
@@ -139,7 +139,7 @@ struct V2SSEDispatchTests {
         await mock.setMessagesResult([
             assistantFixture(sessionID: "ses_1", messageID: "msg_1", partID: "msg_1-text-0", text: "")
         ])
-        let state = await makeV2State(mock: mock)
+        let state = makeV2State(mock: mock)
         state.currentSessionID = "ses_1"
         state.messages = await mock.messagesResult
 
@@ -174,7 +174,7 @@ struct V2SSEDispatchTests {
 
     @Test func reasoningDeltaIsDropped() async {
         let mock = MockAPIClient()
-        let state = await makeV2State(mock: mock)
+        let state = makeV2State(mock: mock)
         state.currentSessionID = "ses_1"
         await state.applySSEEventForTesting(event(
             "session.reasoning.delta",
@@ -187,7 +187,7 @@ struct V2SSEDispatchTests {
 
     @Test func contentUpdatedReloadsMessages() async {
         let mock = MockAPIClient()
-        let state = await makeV2State(mock: mock)
+        let state = makeV2State(mock: mock)
         state.currentSessionID = "ses_1"
         await state.applySSEEventForTesting(event("session.message.content.updated", ["sessionID": "ses_1"]))
         let calls = await mock.messagesCallCount
@@ -196,7 +196,7 @@ struct V2SSEDispatchTests {
 
     @Test func executionFailedMarksPendingSendFailed() async {
         let mock = MockAPIClient()
-        let state = await makeV2State(mock: mock)
+        let state = makeV2State(mock: mock)
         state.currentSessionID = "ses_1"
         let row = userFixture(sessionID: "ses_1", messageID: "msg_u")
         state.messageStore.rememberOutboundSend(
@@ -212,7 +212,7 @@ struct V2SSEDispatchTests {
     }
 
     @Test func formCreatedAppendsCardAndCancelledRemovesIt() async {
-        let state = await makeV2State()
+        let state = makeV2State()
         state.currentSessionID = "ses_1"
         await state.applySSEEventForTesting(event(
             "form.created",
@@ -233,7 +233,7 @@ struct V2SSEDispatchTests {
     }
 
     @Test func permissionAskedAndRepliedFlow() async {
-        let state = await makeV2State()
+        let state = makeV2State()
         await state.applySSEEventForTesting(event(
             "permission.asked",
             ["id": "per_1", "sessionID": "ses_1", "action": "read", "resources": ["*.env"], "save": ["*.env"]]
@@ -250,7 +250,7 @@ struct V2SSEDispatchTests {
     }
 
     @Test func deletedFrameRemovesSession() async {
-        let state = await makeV2State()
+        let state = makeV2State()
         let known = Session(
             id: "ses_9", slug: "ses_9", projectID: "p", directory: "/repo",
             parentID: nil, title: "Doomed", version: "2",

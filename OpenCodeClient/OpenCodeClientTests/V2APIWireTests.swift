@@ -224,7 +224,7 @@ struct V2APIWireTests {
         let api = client(host: host)
         await api.setGeneration(.v2)
         await api.setV2IdleProbe { true }
-        let format = StructuredOutputFormat(schema: ["type": "object"])
+        let format = StructuredOutputFormat(schema: ["type": AnyCodable("object")])
         let result = try await api.promptStructured(
             sessionID: "s1", messageID: "msg_u", text: "q",
             system: "sys", format: format,
@@ -233,7 +233,7 @@ struct V2APIWireTests {
         )
         #expect(result.info.structured != nil)
         #expect(result.info.time.completed == result.info.time.created)
-        let envelopeDecoded = try result.info.carResponseEnvelope
+        let envelopeDecoded = result.info.carResponseEnvelope
         #expect(envelopeDecoded?.speech == "Done")
     }
 
@@ -250,7 +250,7 @@ struct V2APIWireTests {
         let api = client(host: host)
         await api.setGeneration(.v2)
         await api.setV2IdleProbe { true }
-        let format = StructuredOutputFormat(schema: ["type": "object"])
+        let format = StructuredOutputFormat(schema: ["type": AnyCodable("object")])
         let result = try await api.promptStructured(
             sessionID: "s1", messageID: "msg_u", text: "q",
             system: "sys", format: format,
@@ -271,7 +271,8 @@ struct V2APIWireTests {
         defer { cleanup(host) }
         let api = client(host: host)
         await api.setGeneration(.v2)
-        let format = StructuredOutputFormat(schema: ["type": "object"])
+        await api.setV2IdleProbe { true }
+        let format = StructuredOutputFormat(schema: ["type": AnyCodable("object")])
         await #expect(throws: CarModeError.self) {
             try await api.promptStructured(
                 sessionID: "s1", messageID: "msg_u", text: "q",
