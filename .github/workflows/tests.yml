@@ -1,0 +1,120 @@
+# Unit tests on every push/PR; UI tests opt-in via workflow_dispatch.
+#
+# The repo's own runners (scripts/test_unit.sh, scripts/test_ui.sh) do the real
+# work: they pin and boot a simulator, run a bounded preflight probe, and build
+# into a dedicated .occlient/DerivedData (cached below). Public repo, so the
+# macOS runners are free.
+#
+# Runner notes:
+#   - The newest Xcode on the image is selected (the project carries
+#     Xcode-26-era settings like XROS_DEPLOYMENT_TARGET and
+#     SWIFT_APPROACHABLE_CONCURRENCY); the picked version is printed and
+#     baked into the cache key so image drift invalidates cleanly.
+#   - lib_simulator.sh uses GNU `timeout`, which stock macOS lacks; coreutils'
+#     gnubin is prepended to PATH.
+
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_ui_tests:
+        description: "Also run the UI test suite (slow on CI)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        id: xcode
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          echo "selecting $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+          echo "version=$(xcodebuild -version | awk 'NR==1{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure GNU timeout for lib_simulator.sh preflight
+        run: |
+          brew install coreutils
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: .occlient/DerivedData
+          key: dd-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-${{ hashFiles('OpenCodeClient/OpenCodeClient.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            dd-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-
+
+      - name: Run unit tests
+        run: ./scripts/test_unit.sh
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-logs-${{ github.run_id }}
+          path: .occlient/DerivedData/Logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  ui-tests:
+    name: UI tests (manual)
+    runs-on: macos-15
+    timeout-minutes: 90
+    if: github.event_name == 'workflow_dispatch' && inputs.run_ui_tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        id: xcode
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          echo "selecting $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+          echo "version=$(xcodebuild -version | awk 'NR==1{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure GNU timeout for lib_simulator.sh preflight
+        run: |
+          brew install coreutils
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: .occlient/DerivedData
+          key: dd-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-${{ hashFiles('OpenCodeClient/OpenCodeClient.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            dd-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-
+
+      - name: Run UI tests
+        run: ./scripts/test_ui.sh
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-logs-${{ github.run_id }}
+          path: .occlient/DerivedData/Logs
+          retention-days: 7
+          if-no-files-found: ignore
