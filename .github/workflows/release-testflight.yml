@@ -128,7 +128,14 @@ jobs:
             <key>teamID</key>
             <string>$APPLE_TEAM_ID</string>
             <key>signingStyle</key>
-            <string>automatic</string>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.deputyfife.opencode</key>
+              <string>FifeCode</string>
+            </dict>
             <key>uploadSymbols</key>
             <true/>
           </dict>
@@ -140,9 +147,14 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           MARKETING_VERSION: ${{ inputs.marketing_version }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
+          # Manual signing WITHOUT a forced specifier: the app target
+          # auto-selects the installed FifeCode profile (identity + bundle id
+          # match), and package targets sign with the bare identity - they
+          # reject explicitly specified profiles, but auto-selection skips
+          # them (they need no profile). No -allowProvisioningUpdates here:
+          # it would steer the archive at a development profile, and this
+          # team has no registered devices.
           xcodebuild archive \
             -project OpenCodeClient/OpenCodeClient.xcodeproj \
             -scheme OpenCodeClient \
@@ -150,11 +162,9 @@ jobs:
             -archivePath "$RUNNER_TEMP/FifeCode.xcarchive" \
             -derivedDataPath .occlient/DerivedData \
             -quiet \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
             MARKETING_VERSION="${MARKETING_VERSION:-1.0}" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
 
@@ -167,7 +177,6 @@ jobs:
             -archivePath "$RUNNER_TEMP/FifeCode.xcarchive" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -destination 'upload' \
-            -allowProvisioningUpdates \
             -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
