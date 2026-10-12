@@ -224,11 +224,7 @@ struct V2MapperTests {
     }
 
     @Test func formCustomAnswerAndMultiselectAndTypes() throws {
-        let json = #"{"data":[{"id":"frm_2","sessionID":"ses_1","fields":[
-            {"key":"note","type":"string"},
-            {"key":"tags","type":"multiselect","options":[{"value":"a","label":"Alpha"},{"value":"b","label":"Beta"}]},
-            {"key":"count","type":"integer"},
-            {"key":"flag","type":"boolean"}]}]}"#
+        let json = #"{"data":[{"id":"frm_2","sessionID":"ses_1","fields":[{"key":"note","type":"string"},{"key":"tags","type":"multiselect","options":[{"value":"a","label":"Alpha"},{"value":"b","label":"Beta"}]},{"key":"count","type":"integer"},{"key":"flag","type":"boolean"}]}]}"#
         let (_, record) = V2Mapper.forms(data: Data(json.utf8))[0]
 
         let custom = try V2Mapper.replyBody(for: [["freeform"], [], [], []], record: record)
