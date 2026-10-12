@@ -12,8 +12,11 @@
 #   PROVISION_PROFILE_BASE64   base64 of the App Store profile for
 #                              com.deputyfife.opencode
 #
-# Signing is manual (ephemeral runners cannot safely auto-create distribution
-# certificates - the account caps them, and each run would mint a new one).
+# Signing: the distribution certificate + private key are imported into a
+# throwaway keychain (created once via portal CSR - never let CI mint new
+# certs; accounts cap them). Archive and export then use Apple's automatic
+# signing flow (-allowProvisioningUpdates + the ASC API key): xcodebuild
+# matches the imported identity and resolves the profile from the account.
 # CURRENT_PROJECT_VERSION is overridden with the run number so every upload
 # has a unique build number without touching the project. The upload goes to
 # TestFlight automatically (no release submission is created).
@@ -77,16 +80,9 @@ jobs:
           PP_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PP_DIR"
           cp "$PP_PATH" "$PP_DIR/"
-          # security cms -D is flaky on CI; fall back to scanning the embedded
-          # plist (CMS SignedData stores the XML uncompressed inside the DER).
-          UUID="$(security cms -D -i "$PP_PATH" 2>/dev/null | /usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin 2>/dev/null || true)"
-          if [ -z "$UUID" ]; then
-            UUID="$(grep -aA1 '<key>UUID</key>' "$PP_PATH" | grep -o '<string>[A-Fa-f0-9-]*</string>' | head -1 | sed 's/<[^>]*>//g')"
-            echo "(used raw-scan fallback for UUID)"
-          fi
-          echo "profile UUID: $UUID"
-          test -n "$UUID" || { echo "could not determine profile UUID"; exit 1; }
-          echo "PROFILE_UUID=$UUID" >> "$GITHUB_ENV"
+          # Informational only - signing resolves via -allowProvisioningUpdates.
+          UUID="$(grep -aA1 '<key>UUID</key>' "$PP_PATH" | grep -o '<string>[A-Fa-f0-9-]*</string>' | head -1 | sed 's/<[^>]*>//g' || true)"
+          echo "profile UUID (raw scan): ${UUID:-<not found>}"
 
       - name: Write App Store Connect API key
         env:
@@ -116,14 +112,7 @@ jobs:
             <key>teamID</key>
             <string>$APPLE_TEAM_ID</string>
             <key>signingStyle</key>
-            <string>manual</string>
-            <key>signingCertificate</key>
-            <string>Apple Distribution</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>com.deputyfife.opencode</key>
-              <string>$PROFILE_UUID</string>
-            </dict>
+            <string>automatic</string>
             <key>uploadSymbols</key>
             <true/>
           </dict>
@@ -135,6 +124,8 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           MARKETING_VERSION: ${{ inputs.marketing_version }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           xcodebuild archive \
             -project OpenCodeClient/OpenCodeClient.xcodeproj \
@@ -143,10 +134,11 @@ jobs:
             -archivePath "$RUNNER_TEMP/FifeCode.xcarchive" \
             -derivedDataPath .occlient/DerivedData \
             -quiet \
-            CODE_SIGN_STYLE=Manual \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
             MARKETING_VERSION="${MARKETING_VERSION:-1.0}" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
 
@@ -159,6 +151,7 @@ jobs:
             -archivePath "$RUNNER_TEMP/FifeCode.xcarchive" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -destination 'upload' \
+            -allowProvisioningUpdates \
             -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
