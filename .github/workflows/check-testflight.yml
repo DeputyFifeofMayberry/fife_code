@@ -1,0 +1,90 @@
+# Manual: query App Store Connect for FifeCode's app record and the
+# processing state of its uploaded builds. Read-only; uses the same ASC API
+# key as the release workflow. Answers "is my build still processing /
+# VALID / INVALID?" without opening the web UI.
+
+name: Check TestFlight build status
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    name: Query ASC builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Query App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+        run: |
+          printf '%s' "$ASC_API_KEY_P8" | openssl base64 -d -A -out "$RUNNER_TEMP/AuthKey.p8"
+          python3 - "$RUNNER_TEMP/AuthKey.p8" <<'PYEOF'
+          import base64, json, os, subprocess, sys, time, urllib.request
+
+          key_path = sys.argv[1]
+          kid, iss = os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"]
+
+          def b64(b):
+              return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+          def sign(data):
+              # openssl emits DER; ES256 JWTs need the raw 64-byte r||s form.
+              der = subprocess.run(
+                  ["openssl", "dgst", "-sha256", "-sign", key_path],
+                  input=data, capture_output=True, check=True).stdout
+              i, ints = 2, []
+              while i < len(der):
+                  assert der[i] == 0x02, "expected INTEGER"
+                  n = der[i + 1]
+                  ints.append(der[i + 2:i + 2 + n])
+                  i += 2 + n
+              r, s = ints
+              raw = r[-32:].rjust(32, b"\0") + s[-32:].rjust(32, b"\0")
+              return b64(raw)
+
+          h = b64(json.dumps({"alg": "ES256", "kid": kid}).encode())
+          p = b64(json.dumps({"iss": iss, "exp": int(time.time()) + 600,
+                              "aud": "appstoreconnect-v1"}).encode())
+          token = f"{h}.{p}.{sign(f'{h}.{p}'.encode())}"
+
+          def get(url):
+              req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+              with urllib.request.urlopen(req) as resp:
+                  return json.load(resp)
+
+          try:
+              apps = get("https://api.appstoreconnect.apple.com/v1/apps?limit=50")
+          except urllib.error.HTTPError as e:
+              print(f"ASC API error: HTTP {e.code}")
+              sys.exit(1)
+
+          ours = [a for a in apps.get("data", [])
+                  if a.get("attributes", {}).get("bundleId") == "com.deputyfife.opencode"]
+          if not ours:
+              print("App record still not visible via the API (propagation lag).")
+              print("Known bundle IDs on this account:")
+              for a in apps.get("data", []):
+                  print(" -", a.get("attributes", {}).get("bundleId"))
+              sys.exit(0)
+
+          app = ours[0]
+          attrs = app["attributes"]
+          print(f"App: {attrs.get('name')} ({attrs.get('bundleId')}), id {app['id']}")
+
+          builds = get(f"https://api.appstoreconnect.apple.com/v1/builds?filter[app]={app['id']}&limit=10")
+          data = builds.get("data", [])
+          if not data:
+              print("No builds uploaded yet (or still ingesting).")
+              sys.exit(0)
+          for b in data:
+              ba = b["attributes"]
+              print(f"Build {ba.get('version')} | state: {ba.get('processingState')} | "
+                    f"uploaded: {ba.get('uploadedDate')} | "
+                    f"encryption exempt: {ba.get('usesNonExemptEncryption')}")
+          PYEOF
