@@ -106,6 +106,37 @@ jobs:
           echo "APPLE_TEAM_ID length: ${#APPLE_TEAM_ID} (expected 10)"
           head -c 40 "$RUNNER_TEMP/AuthKey.p8" | grep -q "BEGIN PRIVATE KEY" && echo "AuthKey.p8 starts with a PEM header: yes" || echo "AuthKey.p8 starts with a PEM header: NO - ASC_API_KEY_P8 is corrupt"
 
+      - name: Verify app record exists in App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          # Authenticate to the ASC API the same way xcodebuild's upload will,
+          # and check the app record exists before spending minutes archiving.
+          b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          EXP=$(($(date +%s) + 1200))
+          H=$(printf '{"alg":"ES256","kid":"%s"}' "$ASC_KEY_ID" | b64)
+          P=$(printf '{"iss":"%s","exp":%s,"aud":"appstoreconnect-v1"}' "$ASC_ISSUER_ID" "$EXP" | b64)
+          SIG=$(printf '%s' "$H.$P" | openssl dgst -sha256 -sign "$RUNNER_TEMP/AuthKey.p8" -binary | b64)
+          RESP=$(curl -s -w '\nHTTP_STATUS:%{http_code}' \
+            -H "Authorization: Bearer $H.$P.$SIG" \
+            "https://api.appstoreconnect.apple.com/v1/apps?filter%5BbundleId%5D=com.deputyfife.opencode")
+          STATUS=$(echo "$RESP" | tail -1 | cut -d: -f2)
+          BODY=$(echo "$RESP" | head -n -1)
+          echo "ASC /v1/apps HTTP status: $STATUS"
+          echo "$BODY" | grep -o '"bundleId":"[^"]*"' | sort -u || true
+          COUNT=$(echo "$BODY" | grep -c '"bundleId":"com.deputyfife.opencode"' || true)
+          if [ "$STATUS" = "401" ]; then
+            echo "ERROR: Apple rejected the API key (401). Check ASC_KEY_ID / ASC_ISSUER_ID."
+            exit 1
+          fi
+          if [ "$COUNT" = "0" ]; then
+            echo "ERROR: no App Store Connect app record for com.deputyfife.opencode."
+            echo "Fix: App Store Connect -> My Apps -> + -> New App -> name FifeCode, pick this bundle ID, SKU anything. Then re-run."
+            exit 1
+          fi
+          echo "App record found - proceeding."
+
       - name: Write ExportOptions.plist
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
