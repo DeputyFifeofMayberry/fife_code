@@ -196,10 +196,11 @@ actor SSEClient {
     func connectLease(
         baseURL: String,
         username: String? = nil,
-        password: String? = nil
+        password: String? = nil,
+        eventPath: String = "/global/event"
     ) -> SSEStreamLease {
         let urlString = baseURL.hasPrefix("http") ? baseURL : "http://\(baseURL)"
-        guard let url = URL(string: "\(urlString)/global/event") else {
+        guard let url = URL(string: "\(urlString)\(eventPath)") else {
             return SSEStreamLease(
                 events: AsyncThrowingStream { $0.finish(throwing: APIError.invalidURL) },
                 cancel: {}

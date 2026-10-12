@@ -27,6 +27,10 @@ actor APIClient {
     private var username: String?
     private var password: String?
     private let session: URLSession
+    /// Wire generation for the configured host, set by `testConnection` from
+    /// the detection probe. Every request method branches on it; V1 hosts
+    /// keep the exact current wire behavior.
+    private var generation: APIGeneration = .auto
 
     // Default to localhost to avoid leaking a personal LAN IP in open source repos.
     nonisolated static let defaultServer = "127.0.0.1:4096"
@@ -47,6 +51,21 @@ actor APIClient {
         self.baseURL = Self.normalizeBaseURL(baseURL)
         self.username = username
         self.password = password
+    }
+
+    /// Runs the generation probe against the configured host with the
+    /// configured credentials (docs/v2_server_compatibility.md, Detection).
+    func detectGeneration() async throws -> GenerationDetection {
+        await GenerationProbe.detect(
+            baseURL: baseURL,
+            username: username,
+            password: password,
+            session: session
+        )
+    }
+
+    func setGeneration(_ generation: APIGeneration) {
+        self.generation = generation
     }
 
     /// Adds http:// when no scheme is present and strips trailing slashes so
@@ -940,6 +959,8 @@ enum APIError: LocalizedError {
 
 protocol APIClientProtocol: Actor {
     func configure(baseURL: String, username: String?, password: String?)
+    func detectGeneration() async throws -> GenerationDetection
+    func setGeneration(_ generation: APIGeneration)
     func health() async throws -> HealthResponse
     func projects() async throws -> [Project]
     func projectCurrent() async throws -> Project?
@@ -973,6 +994,18 @@ protocol APIClientProtocol: Actor {
 }
 
 extension APIClient: APIClientProtocol {}
+
+extension APIClientProtocol {
+    /// Mocks and fixtures only implement the V1 surface, so the generation
+    /// requirements degrade to it: detection maps `health()`, and setting a
+    /// generation is a recorded no-op.
+    func detectGeneration() async throws -> GenerationDetection {
+        let health = try await health()
+        return health.healthy ? .v1(version: health.version) : .v1Unhealthy(version: health.version)
+    }
+
+    func setGeneration(_ generation: APIGeneration) {}
+}
 
 protocol FileDirectorySearching: APIClientProtocol {
     func findFile(query: String, limit: Int, directory: String?) async throws -> [String]

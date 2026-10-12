@@ -42,7 +42,8 @@ extension AppState {
                 lease = await client.connectLease(
                     baseURL: baseURL,
                     username: credentialUser,
-                    password: credentialPassword
+                    password: credentialPassword,
+                    eventPath: serverGeneration == .v2 ? "/api/event" : "/global/event"
                 )
             } else {
                 lease = SSEStreamLease(

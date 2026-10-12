@@ -189,6 +189,7 @@ enum L10n {
         case hostExportErrorEncodeConfigJSON
         case hostConnectionErrorInvalidURL
         case hostConnectionErrorBasicAuthRejected
+        case hostConnectionErrorUnrecognizedGeneration
         case hostConnectionErrorHTTPStatus
         case hostConnectionErrorCannotConnect
         case hostConnectionErrorTimedOut
@@ -641,6 +642,7 @@ enum L10n {
         Key.hostExportErrorEncodeConfigJSON.rawValue: "Could not encode Host Config JSON.",
         Key.hostConnectionErrorInvalidURL.rawValue: "Invalid OpenCode URL. Check the host address and port.",
         Key.hostConnectionErrorBasicAuthRejected.rawValue: "OpenCode rejected Basic Auth. Check username and password.",
+        Key.hostConnectionErrorUnrecognizedGeneration.rawValue: "Server is not a recognizable OpenCode v1 or v2 API (health: HTTP %@, info: HTTP %@).",
         Key.hostConnectionErrorHTTPStatus.rawValue: "OpenCode returned HTTP %d. Check the server logs or provider setup.",
         Key.hostConnectionErrorCannotConnect.rawValue: "Could not connect to OpenCode. Check network reachability and that the server is running.",
         Key.hostConnectionErrorTimedOut.rawValue: "Connection timed out. Check the host, port, VPN/Tailscale, and firewall.",
@@ -1097,6 +1099,7 @@ enum L10n {
         Key.hostExportErrorEncodeConfigJSON.rawValue: "无法生成 Host Config JSON。",
         Key.hostConnectionErrorInvalidURL.rawValue: "OpenCode 地址无效，请检查主机地址和端口。",
         Key.hostConnectionErrorBasicAuthRejected.rawValue: "OpenCode 拒绝了 Basic Auth，请检查用户名和密码。",
+        Key.hostConnectionErrorUnrecognizedGeneration.rawValue: "服务器不是可识别的 OpenCode v1 或 v2 API（health：HTTP %@，info：HTTP %@）。",
         Key.hostConnectionErrorHTTPStatus.rawValue: "OpenCode 返回 HTTP %d。请检查服务器日志或服务商配置。",
         Key.hostConnectionErrorCannotConnect.rawValue: "无法连接到 OpenCode。请检查网络是否可达，以及服务器是否正在运行。",
         Key.hostConnectionErrorTimedOut.rawValue: "连接超时。请检查主机、端口、VPN/Tailscale 和防火墙。",
