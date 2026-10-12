@@ -56,7 +56,9 @@ else
 fi
 
 # --- Preflight: 15s bounded screenshot probe ---------------------------------
-PROBE_PNG="$(mktemp -t occlient-sim-probe).png"
+# Full template with X's: GNU mktemp (coreutils on PATH) rejects the bare
+# `mktemp -t prefix` form that BSD mktemp auto-suffixes with X's.
+PROBE_PNG="$(mktemp "${TMPDIR:-/tmp}/occlient-sim-probe.XXXXXXXX").png"
 if ! timeout 15 xcrun simctl io "$SIM_UDID" screenshot "$PROBE_PNG" >/dev/null 2>&1; then
   echo "error: simulator unresponsive within 15s (wedged?)." >&2
   echo "fixes, in order:" >&2
