@@ -24,7 +24,7 @@ python -m ui_driver --help
 
 ```bash
 python -m ui_driver devices
-python -m ui_driver launch --bundle-id com.grapeot.OpenCodeClient
+python -m ui_driver launch --bundle-id com.deputyfife.opencode
 python -m ui_driver screenshot --output artifacts/screen.png
 python -m ui_driver tree --screenshot artifacts/screen.png
 python -m ui_driver tree \

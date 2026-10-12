@@ -11,7 +11,7 @@ This skill is the iOS counterpart to Android's emulator operation skill. The cur
 - Project root: `/Users/grapeot/co/knowledge_working/adhoc_jobs/opencode_ios_client`
 - Xcode project: `OpenCodeClient/OpenCodeClient.xcodeproj`
 - Scheme: `OpenCodeClient`
-- App bundle id: `com.grapeot.OpenCodeClient`
+- App bundle id: `com.deputyfife.opencode`
 - Driver path: `ui_driver/`
 - Driver command: `ui_driver/.venv/bin/python -m ui_driver`
 
@@ -43,13 +43,13 @@ List simulators:
 Launch the app on the first booted simulator:
 
 ```bash
-.venv/bin/python -m ui_driver launch --bundle-id com.grapeot.OpenCodeClient
+.venv/bin/python -m ui_driver launch --bundle-id com.deputyfife.opencode
 ```
 
 Launch with fixture arguments:
 
 ```bash
-.venv/bin/python -m ui_driver launch --bundle-id com.grapeot.OpenCodeClient UITEST_TOOL_CARDS_FIXTURE
+.venv/bin/python -m ui_driver launch --bundle-id com.deputyfife.opencode UITEST_TOOL_CARDS_FIXTURE
 ```
 
 Capture a screenshot:
