@@ -168,7 +168,17 @@ extension AppState {
         sseLastFrameAt = Date()
         let type = event.payload.type
         let props = event.payload.properties ?? [:]
+        if serverGeneration == .v2 {
+            await handleV2SSEEvent(type: type, properties: props)
+            return
+        }
+        await handleV1ShapedSSEEvent(type: type, properties: props)
+    }
 
+    /// The SSE data path (PR #186) for v1-shaped events. The v2 dispatch
+    /// translates frames into these property shapes and reuses this switch,
+    /// so the MessageStore upsert/completeness-gate behavior is identical.
+    func handleV1ShapedSSEEvent(type: String, properties props: [String: AnyCodable]) async {
         switch type {
         case "server.connected":
             await syncSessionStatusesFromPoll(markMissingBusyAsIdle: true)
@@ -209,25 +219,7 @@ extension AppState {
                JSONSerialization.isValidJSONObject(infoObj),
                let data = try? JSONSerialization.data(withJSONObject: infoObj),
                let session = try? JSONDecoder().decode(Session.self, from: data) {
-                if sessionScope.confirmedMissingSessionIDs.contains(session.id) {
-                    return
-                }
-                let dir = effectiveProjectDirectory ?? serverCurrentProjectWorktree
-                let isCurrent = (session.id == currentSessionID)
-                let isKnown = sessions.contains(where: { $0.id == session.id })
-                // REST treats a missing directory as the server's current project,
-                // while /global/event carries updates from every project.
-                let matchesProject = dir.map { session.directory == $0 } ?? isKnown
-                let shouldApply = matchesProject || isCurrent
-                if shouldApply {
-                    if sessions.first(where: { $0.id == session.id }) == session { return }
-
-                    let wasUpdate = sessions.contains(where: { $0.id == session.id })
-                    Self.logger.debug("session.updated id=\(session.id, privacy: .public) archived=\(session.time.archived.map { String($0) } ?? "nil", privacy: .public) dir=\(session.directory, privacy: .public) op=\(wasUpdate ? "replace" : "insert", privacy: .public)")
-                    upsertSession(session)
-                } else {
-                    Self.logger.debug("session.updated skip id=\(session.id, privacy: .public) dir=\(session.directory, privacy: .public) effectiveDir=\(dir ?? "nil", privacy: .public)")
-                }
+                await applySessionUpdate(session)
             }
         case "session.deleted":
             if let sessionID = (props["sessionID"]?.value as? String) ?? (props["id"]?.value as? String) {
@@ -412,6 +404,213 @@ extension AppState {
         default:
             break
         }
+    }
+
+    /// Shared by the v1 `session.updated` case and the v2
+    /// `session.created/renamed/metadata.updated` dispatch: project filter,
+    /// upsert, logging.
+    func applySessionUpdate(_ session: Session) async {
+        if sessionScope.confirmedMissingSessionIDs.contains(session.id) {
+            return
+        }
+        let dir = effectiveProjectDirectory ?? serverCurrentProjectWorktree
+        let isCurrent = (session.id == currentSessionID)
+        let isKnown = sessions.contains(where: { $0.id == session.id })
+        // REST treats a missing directory as the server's current project,
+        // while /global/event carries updates from every project.
+        let matchesProject = dir.map { session.directory == $0 } ?? isKnown
+        let shouldApply = matchesProject || isCurrent
+        if shouldApply {
+            if sessions.first(where: { $0.id == session.id }) == session { return }
+
+            let wasUpdate = sessions.contains(where: { $0.id == session.id })
+            Self.logger.debug("session.updated id=\(session.id, privacy: .public) archived=\(session.time.archived.map { String($0) } ?? "nil", privacy: .public) dir=\(session.directory, privacy: .public) op=\(wasUpdate ? "replace" : "insert", privacy: .public)")
+            upsertSession(session)
+        } else {
+            Self.logger.debug("session.updated skip id=\(session.id, privacy: .public) dir=\(session.directory, privacy: .public) effectiveDir=\(dir ?? "nil", privacy: .public)")
+        }
+    }
+
+    /// V2 SSE dispatch (spec: SSE). Each v2 frame type is translated into
+    /// the property shapes the v1 handlers already accept and reuses them;
+    /// follow-up calls (reload, GET session) live here, never in the pure
+    /// translation helpers. There is no `todo.updated` on this socket, no
+    /// `message.updated`, and no `message.part.delta` — do not wait for
+    /// those names.
+    func handleV2SSEEvent(type: String, properties data: [String: AnyCodable]) async {
+        switch type {
+        case "server.connected":
+            await handleV1ShapedSSEEvent(type: "server.connected", properties: [:])
+        case "session.status":
+            // `data` already carries `sessionID` and `status`; the idle
+            // branch reconciles once per turn, which stays.
+            await handleV1ShapedSSEEvent(type: "session.status", properties: data)
+        case "session.idle":
+            guard let sessionID = data["sessionID"]?.value as? String else { return }
+            await handleV1ShapedSSEEvent(
+                type: "session.status",
+                properties: [
+                    "sessionID": AnyCodable(sessionID),
+                    "status": AnyCodable(["type": "idle"]),
+                ]
+            )
+        case "session.created", "session.renamed", "session.metadata.updated":
+            // The v2 substitute for session.updated: GET the session and
+            // upsert; never decode the event as a Session.
+            guard let sessionID = data["sessionID"]?.value as? String else { return }
+            guard let session = try? await apiClient.session(sessionID: sessionID) else { return }
+            await applySessionUpdate(session)
+        case "session.deleted":
+            await handleV1ShapedSSEEvent(type: "session.deleted", properties: data)
+        case "session.text.started":
+            await v2HandleTextStarted(data)
+        case "session.text.delta":
+            await v2HandleTextDelta(data)
+        case "session.text.ended":
+            await v2HandleTextEnded(data)
+        case "session.reasoning.delta":
+            // Not visible text; never calls recordVisibleToken.
+            break
+        case "session.reasoning.ended":
+            if v2IsCurrentSession(data) {
+                await loadMessages()
+            }
+        case "session.message.content.updated":
+            // Step start already happened on session.text.started.
+            if v2IsCurrentSession(data) {
+                await loadMessages()
+            }
+        case "permission.asked":
+            let raw = data.mapValues { $0.value }
+            guard let shaped = V2Mapper.permissionAskedProperties(raw) else { return }
+            await handleV1ShapedSSEEvent(type: "permission.asked", properties: shaped.mapValues { AnyCodable($0) })
+        case "permission.replied":
+            // `permissionID` is data.requestID; the existing remover accepts
+            // permissionID or id and needs the sessionID.
+            var props: [String: AnyCodable] = [:]
+            if let sessionID = data["sessionID"]?.value as? String {
+                props["sessionID"] = AnyCodable(sessionID)
+            }
+            if let requestID = data["requestID"]?.value as? String {
+                props["permissionID"] = AnyCodable(requestID)
+            }
+            await handleV1ShapedSSEEvent(type: "permission.replied", properties: props)
+        case "form.created":
+            await v2HandleFormCreated(data)
+        case "form.replied", "form.cancelled":
+            // Both only remove the card; there is no second rejected behavior.
+            guard let id = data["id"]?.value as? String else { return }
+            await handleV1ShapedSSEEvent(type: "question.rejected", properties: ["id": AnyCodable(id)])
+        case "session.execution.failed":
+            await v2HandleExecutionFailed(data)
+        default:
+            break
+        }
+    }
+
+    private func v2IsCurrentSession(_ data: [String: AnyCodable]) -> Bool {
+        (data["sessionID"]?.value as? String) == currentSessionID
+    }
+
+    private func v2Ordinal(_ data: [String: AnyCodable]) -> Int? {
+        let value = data["ordinal"]?.value
+        if let int = value as? Int { return int }
+        if let double = value as? Double, double == double.rounded() { return Int(double) }
+        return nil
+    }
+
+    private func v2TextFrame(
+        _ data: [String: AnyCodable],
+        text: String?
+    ) -> (sessionID: String, properties: [String: AnyCodable])? {
+        guard let sessionID = data["sessionID"]?.value as? String,
+              let assistantMessageID = data["assistantMessageID"]?.value as? String,
+              let ordinal = v2Ordinal(data) else { return nil }
+        let partID = V2Mapper.textPartID(assistantMessageID: assistantMessageID, ordinal: ordinal)
+        var part: [String: Any] = [
+            "type": "text",
+            "id": partID,
+            "messageID": assistantMessageID,
+            "sessionID": sessionID,
+        ]
+        if let text {
+            part["text"] = text
+        }
+        return (
+            sessionID,
+            [
+                "sessionID": AnyCodable(sessionID),
+                "part": AnyCodable(part),
+            ]
+        )
+    }
+
+    private func v2HandleTextStarted(_ data: [String: AnyCodable]) async {
+        guard let sessionID = data["sessionID"]?.value as? String,
+              let assistantMessageID = data["assistantMessageID"]?.value as? String else { return }
+        // Step start first: the decoding window opens before any token.
+        if sessionID == currentSessionID {
+            messageStore.recordStepStart(assistantMessageID, sessionID: sessionID)
+        }
+        guard let frame = v2TextFrame(data, text: nil) else { return }
+        // The part carries no text, so the data path completeness gate
+        // rejects it and the v1 handler falls back to the REST reload —
+        // exactly the spec's behavior for the start frame.
+        await handleV1ShapedSSEEvent(type: "message.part.updated", properties: frame.properties)
+    }
+
+    private func v2HandleTextDelta(_ data: [String: AnyCodable]) async {
+        guard let sessionID = data["sessionID"]?.value as? String,
+              let assistantMessageID = data["assistantMessageID"]?.value as? String,
+              let ordinal = v2Ordinal(data),
+              let delta = data["delta"]?.value as? String, !delta.isEmpty else { return }
+        await handleV1ShapedSSEEvent(
+            type: "message.part.delta",
+            properties: [
+                "sessionID": AnyCodable(sessionID),
+                "messageID": AnyCodable(assistantMessageID),
+                "partID": AnyCodable(V2Mapper.textPartID(assistantMessageID: assistantMessageID, ordinal: ordinal)),
+                "field": AnyCodable("text"),
+                "delta": AnyCodable(delta),
+            ]
+        )
+    }
+
+    private func v2HandleTextEnded(_ data: [String: AnyCodable]) async {
+        guard let frame = v2TextFrame(data, text: data["text"]?.value as? String) else { return }
+        // Upsert the full text through the data path first, then finalize
+        // with one reload. The part-updated handler runs exactly once here.
+        await handleV1ShapedSSEEvent(type: "message.part.updated", properties: frame.properties)
+        if frame.sessionID == currentSessionID {
+            await loadMessages()
+            await loadSessionDiff()
+        }
+    }
+
+    private func v2HandleFormCreated(_ data: [String: AnyCodable]) async {
+        guard let formObject = data["form"]?.value as? [String: Any],
+              let mapped = V2Mapper.form(from: formObject) else { return }
+        // The reply table must know this form before any reply or reject.
+        await apiClient.rememberForm(mapped.record)
+        guard let properties = V2Mapper.objectDictionary(from: mapped.request) else { return }
+        await handleV1ShapedSSEEvent(type: "question.asked", properties: properties.mapValues { AnyCodable($0) })
+    }
+
+    private func v2HandleExecutionFailed(_ data: [String: AnyCodable]) async {
+        guard let sessionID = data["sessionID"]?.value as? String,
+              let error = data["error"]?.value as? [String: Any] else { return }
+        // `error.response.body` (optional since 2.0.20) is dropped: the
+        // banner keeps rendering type + message.
+        await handleV1ShapedSSEEvent(
+            type: "session.error",
+            properties: [
+                "sessionID": AnyCodable(sessionID),
+                "error": AnyCodable([
+                    "name": error["type"] as? String ?? "",
+                    "data": ["message": error["message"] as? String ?? ""],
+                ]),
+            ]
+        )
     }
 
     func acknowledgeOffscreenOutboundUser(properties: [String: AnyCodable], sessionID: String) {
