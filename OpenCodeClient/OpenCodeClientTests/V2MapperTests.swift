@@ -283,7 +283,12 @@ struct V2MapperTests {
         let providersJSON = #"{"data":[{"id":"p1","name":"Provider One","activation":"enabled"},{"id":"p2","name":"Disabled","activation":"disabled"}]}"#
         let registry = V2Mapper.providerRegistry(modelData: Data(models.utf8), providerData: Data(providersJSON.utf8))
         #expect(registry.providers.map(\.id) == ["orphan", "p1", "p2"])
-        #expect(registry.connectedProviderIDs == ["p1", "orphan"])
+        // Connected ids come from the provider list's non-disabled entries;
+        // the model-list fallback applies only when the list is empty.
+        #expect(registry.connectedProviderIDs == ["p1"])
+
+        let fallback = V2Mapper.providerRegistry(modelData: Data(models.utf8), providerData: Data(#"{"data":[]}"#.utf8))
+        #expect(fallback.connectedProviderIDs == ["orphan", "p1"])
 
         let providers = V2Mapper.providers(
             modelData: Data(models.utf8),
