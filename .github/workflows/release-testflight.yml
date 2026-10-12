@@ -149,7 +149,11 @@ jobs:
           fi
           if [ "$COUNT" = "0" ]; then
             echo "ERROR: no App Store Connect app record for com.deputyfife.opencode."
-            echo "Fix: App Store Connect -> My Apps -> + -> New App -> name FifeCode, pick this bundle ID, SKU anything. Then re-run."
+            echo "All bundle IDs currently registered on this account:"
+            curl -s -H "Authorization: Bearer $H.$P.$SIG" \
+              "https://api.appstoreconnect.apple.com/v1/apps?limit=50" | grep -o '"bundleId":"[^"]*"' | sort -u || true
+            echo "If a record exists under a different bundle ID, fix it or re-create it with the exact ID."
+            echo "If you just created the right record, wait 5 minutes (propagation) and re-run."
             exit 1
           fi
           echo "App record found - proceeding."
