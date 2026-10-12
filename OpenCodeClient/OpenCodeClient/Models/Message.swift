@@ -340,6 +340,16 @@ nonisolated struct Message: Codable, Identifiable {
             total = try c.decodeIfPresent(Int.self, forKey: .total)
                 ?? (input + output + reasoning + (cache?.read ?? 0) + (cache?.write ?? 0))
         }
+
+        /// Mapper-side construction (v2 payloads): `total` is synthesized the
+        /// same way as decoding.
+        init(input: Int, output: Int, reasoning: Int, cache: CacheInfo?) {
+            self.input = input
+            self.output = output
+            self.reasoning = reasoning
+            self.cache = cache
+            self.total = input + output + reasoning + (cache?.read ?? 0) + (cache?.write ?? 0)
+        }
     }
 
     struct TimeInfo: Codable {

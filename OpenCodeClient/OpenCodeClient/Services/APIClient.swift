@@ -737,6 +737,12 @@ nonisolated struct ProvidersResponse: Decodable {
 
         providers = []
     }
+
+    /// Mapper-side construction (v2 payloads, spec: providers and models).
+    init(providers: [ConfigProvider], default: DefaultProvider?) {
+        self.providers = providers
+        self.`default` = `default`
+    }
 }
 
 /// Response of `/provider`: every known provider plus the subset that is
