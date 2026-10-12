@@ -453,6 +453,35 @@ nonisolated struct MessageWithParts: Codable {
     }
 }
 
+extension Message {
+    /// Returns a copy with `structured` set (v2 structured send). When the
+    /// turn is known idle and the server omitted `time.completed`, synthesize
+    /// it from `time.created` so the existing completed check passes.
+    func withStructured(_ structured: WireJSON, completingWhenIdle isIdle: Bool) -> Message {
+        let resolvedTime: TimeInfo
+        if time.completed == nil, isIdle {
+            resolvedTime = TimeInfo(created: time.created, completed: time.created)
+        } else {
+            resolvedTime = time
+        }
+        return Message(
+            id: id,
+            sessionID: sessionID,
+            role: role,
+            parentID: parentID,
+            providerID: providerID,
+            modelID: modelID,
+            model: model,
+            error: error,
+            time: resolvedTime,
+            finish: finish,
+            tokens: tokens,
+            cost: cost,
+            structured: structured
+        )
+    }
+}
+
 struct ComposerImageAttachment: Identifiable, Equatable {
     let id: UUID
     let filename: String

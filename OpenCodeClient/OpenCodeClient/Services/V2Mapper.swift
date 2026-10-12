@@ -364,6 +364,12 @@ nonisolated enum V2Mapper {
         "\(assistantMessageID)-text-\(ordinal)"
     }
 
+    /// Structured-send selection (spec step 5): the assistant whose
+    /// parentID is the admitted user id; the last one when several match.
+    static func structuredAssistant(in transcript: [MessageWithParts], afterUserID: String) -> MessageWithParts? {
+        transcript.last { $0.info.isAssistant && $0.info.parentID == afterUserID }
+    }
+
     // MARK: - Forms (spec: Questions)
 
     /// Each form becomes one `QuestionRequest` plus the reply-table record.

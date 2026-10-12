@@ -247,6 +247,11 @@ extension AppState {
                 model: model,
                 directory: directory
             )
+            if serverGeneration == .v2 {
+                // No message.updated event exists on v2: the reload is what
+                // acknowledges the optimistic row (the server echoed our id).
+                await loadMessages()
+            }
             return true
         } catch {
             let reason: String

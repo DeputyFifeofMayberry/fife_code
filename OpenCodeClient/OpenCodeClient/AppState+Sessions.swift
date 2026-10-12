@@ -100,12 +100,17 @@ extension AppState {
         }
 
         await apiClient.configure(baseURL: baseURL, username: username.isEmpty ? nil : username, password: password.isEmpty ? nil : password)
+        // Early-stop hook for the v2 structured-send poll (harmless on v1).
+        await apiClient.setV2IdleProbe { [weak self] in
+            guard let self else { return false }
+            return await self.v2IdleProbeValue()
+        }
         guard isCurrentHostRequest(snapshot) else { return }
         do {
             updateConnectionDiagnostic(phase: .health, message: L10n.t(.hostDiagnosticCheckingHealthURL, baseURL))
             let detection = try await apiClient.detectGeneration()
             guard isCurrentHostRequest(snapshot) else { return }
-            applyGenerationDetection(detection)
+            await applyGenerationDetection(detection)
         } catch {
             guard isCurrentHostRequest(snapshot) else { return }
             isConnected = false
@@ -123,7 +128,7 @@ extension AppState {
     /// APIClient, host profile), then either connects or records why not.
     /// Per the approved deviation from the spec's Detection section,
     /// `isConnected` flips on the winning probe — no session-list gate.
-    func applyGenerationDetection(_ detection: GenerationDetection) {
+    func applyGenerationDetection(_ detection: GenerationDetection) async {
         if let generation = detection.generation {
             serverGeneration = generation
             persistDetectedGeneration(generation)
@@ -133,7 +138,7 @@ extension AppState {
         }
         switch detection {
         case .v1, .v2:
-            Task { [apiClient] in await apiClient.setGeneration(detection.generation ?? .v1) }
+            await apiClient.setGeneration(detection.generation ?? .v1)
             isConnected = true
             updateConnectionDiagnostic(
                 phase: .connected,
@@ -141,7 +146,7 @@ extension AppState {
             )
             connectSSE()
         case .v1Unhealthy:
-            Task { [apiClient] in await apiClient.setGeneration(.v1) }
+            await apiClient.setGeneration(.v1)
             isConnected = false
             connectionError = L10n.t(.hostDiagnosticHealthUnhealthy)
             updateConnectionDiagnostic(
@@ -188,6 +193,14 @@ extension AppState {
         guard hostProfiles[index].apiGeneration != generation else { return }
         hostProfiles[index].apiGeneration = generation
         saveHostProfiles()
+    }
+
+    /// Poll early-stop for the v2 structured send: true when the last
+    /// session status observed for the current session is idle or retry.
+    func v2IdleProbeValue() -> Bool {
+        guard let sessionID = currentSessionID else { return false }
+        let type = sessionStatuses[sessionID]?.type
+        return type == "idle" || type == "retry"
     }
 
     func loadProjects() async {

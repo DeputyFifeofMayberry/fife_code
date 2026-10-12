@@ -29,8 +29,15 @@ actor APIClient {
     private let session: URLSession
     /// Wire generation for the configured host, set by `testConnection` from
     /// the detection probe. Every request method branches on it; V1 hosts
-    /// keep the exact current wire behavior.
-    private var generation: APIGeneration = .auto
+    /// keep the exact current wire behavior. Internal so the v2 request
+    /// extension (APIClient+V2.swift) can branch and dispatch.
+    var generation: APIGeneration = .auto
+    /// Pending v2 forms keyed by form id (the reply table, spec: Questions).
+    /// Filled by `pendingQuestions(sessionID:)` and `rememberForm`.
+    var v2FormRecords: [String: V2FormRecord] = [:]
+    /// Early-stop for the v2 structured-send poll: true when the open SSE
+    /// socket reports the session idle or retry. Set by AppState.
+    var v2IdleProbe: (@Sendable () async -> Bool)?
 
     // Default to localhost to avoid leaking a personal LAN IP in open source repos.
     nonisolated static let defaultServer = "127.0.0.1:4096"
@@ -68,6 +75,14 @@ actor APIClient {
         self.generation = generation
     }
 
+    func setV2IdleProbe(_ probe: (@Sendable () async -> Bool)?) {
+        self.v2IdleProbe = probe
+    }
+
+    func rememberForm(_ record: V2FormRecord) {
+        v2FormRecords[record.formID] = record
+    }
+
     /// Adds http:// when no scheme is present and strips trailing slashes so
     /// appended paths (e.g. "/global/health") never produce double slashes.
     nonisolated static func normalizeBaseURL(_ raw: String) -> String {
@@ -78,7 +93,9 @@ actor APIClient {
         return base
     }
 
-    private func makeRequest(
+    /// Shared request builder. Internal (not private) so the v2 request
+    /// extension in APIClient+V2.swift reuses the same auth/URL plumbing.
+    func makeRequest(
         path: String,
         method: String = "GET",
         queryItems: [URLQueryItem]? = nil,
@@ -145,16 +162,28 @@ actor APIClient {
     }
 
     func projects() async throws -> [Project] {
+        if generation == .v2 {
+            let (data, _) = try await makeRequest(path: "/api/project")
+            return V2Mapper.projects(data)
+        }
         let (data, _) = try await makeRequest(path: "/project")
         return try JSONDecoder().decode([Project].self, from: data)
     }
 
     func projectCurrent() async throws -> Project? {
+        if generation == .v2 {
+            let (projectData, _) = try await makeRequest(path: "/api/project")
+            let (locationData, _) = try await makeRequest(path: "/api/location")
+            return V2Mapper.currentProject(locationData: locationData, projects: V2Mapper.projects(projectData))
+        }
         let (data, _) = try await makeRequest(path: "/project/current")
         return try? JSONDecoder().decode(Project.self, from: data)
     }
 
     func sessions(directory: String? = nil, limit: Int = 100) async throws -> [Session] {
+        if generation == .v2 {
+            return try await v2Sessions(directory: directory, limit: limit)
+        }
         var queryItems: [URLQueryItem] = []
         if let directory, !directory.isEmpty {
             queryItems.append(URLQueryItem(name: "directory", value: directory))
@@ -170,6 +199,10 @@ actor APIClient {
     }
 
     func session(sessionID: String) async throws -> Session {
+        if generation == .v2 {
+            let (data, _) = try await makeRequest(path: "/api/session/\(sessionID)")
+            return try V2Mapper.sessionFromEnvelope(data)
+        }
         let (data, _) = try await makeRequest(path: "/session/\(sessionID)")
         return try JSONDecoder().decode(Session.self, from: data)
     }
@@ -183,6 +216,17 @@ actor APIClient {
         agent: String = "build",
         model: Message.ModelInfo
     ) async throws -> MessageWithParts {
+        if generation == .v2 {
+            return try await v2PromptStructured(
+                sessionID: sessionID,
+                messageID: messageID,
+                text: text,
+                system: system,
+                format: format,
+                agent: agent,
+                model: model
+            )
+        }
         struct PromptBody: Encodable {
             struct PartInput: Encodable {
                 let type: String
@@ -220,6 +264,9 @@ actor APIClient {
     }
 
     func createSession(title: String? = nil, directory: String? = nil) async throws -> Session {
+        if generation == .v2 {
+            return try await v2CreateSession(title: title, directory: directory)
+        }
         let body = title.map { ["title": $0] } ?? [:]
         let data = try JSONEncoder().encode(body)
         let queryItems = directory.map { [URLQueryItem(name: "directory", value: $0)] }
@@ -233,6 +280,9 @@ actor APIClient {
     }
 
     func updateSession(sessionID: String, title: String) async throws -> Session {
+        if generation == .v2 {
+            return try await v2UpdateSession(sessionID: sessionID, title: title)
+        }
         let body = ["title": title]
         let data = try JSONEncoder().encode(body)
         let (responseData, _) = try await makeRequest(path: "/session/\(sessionID)", method: "PATCH", body: data)
@@ -240,6 +290,11 @@ actor APIClient {
     }
 
     func updateSessionArchived(sessionID: String, archived: Int) async throws -> Session {
+        if generation == .v2 {
+            // No v2 write route (spec: Archive). Do not call the network and
+            // do not forge a locally archived session.
+            throw APIError.httpError(statusCode: 404, data: Data())
+        }
         struct Body: Encodable {
             struct Time: Encodable {
                 let archived: Int
@@ -254,6 +309,13 @@ actor APIClient {
     }
 
     func deleteSession(sessionID: String) async throws {
+        if generation == .v2 {
+            let (data, http) = try await makeRequest(path: "/api/session/\(sessionID)", method: "DELETE")
+            guard http.statusCode == 204 else {
+                throw APIError.httpError(statusCode: http.statusCode, data: data)
+            }
+            return
+        }
         let (data, _) = try await makeRequest(path: "/session/\(sessionID)", method: "DELETE")
         try acceptEmptyOrJSONBoolean(data)
     }
@@ -263,6 +325,10 @@ actor APIClient {
             guard let limit, limit > 0 else { return nil }
             return [URLQueryItem(name: "limit", value: String(limit))]
         }()
+        if generation == .v2 {
+            let (data, _) = try await makeRequest(path: "/api/session/\(sessionID)/message", queryItems: queryItems)
+            return try V2Mapper.messages(sessionID: sessionID, data: data)
+        }
         let (data, _) = try await makeRequest(path: "/session/\(sessionID)/message", queryItems: queryItems)
         guard let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else {
@@ -411,6 +477,16 @@ actor APIClient {
         model: Message.ModelInfo?,
         directory: String?
     ) async throws {
+        if generation == .v2 {
+            return try await v2PromptAsync(
+                sessionID: sessionID,
+                messageID: messageID,
+                text: text,
+                attachments: attachments,
+                agent: agent,
+                model: model
+            )
+        }
         struct PromptBody: Encodable {
             let messageID: String
             let parts: [PartInput]
@@ -462,6 +538,18 @@ actor APIClient {
     }
 
     func abort(sessionID: String) async throws {
+        if generation == .v2 {
+            let (data, http) = try await makeRequest(
+                path: "/api/session/\(sessionID)/interrupt",
+                method: "POST",
+                body: Data("{}".utf8)
+            )
+            // `interrupted` in the body is ignored.
+            guard http.statusCode == 200 else {
+                throw APIError.httpError(statusCode: http.statusCode, data: data)
+            }
+            return
+        }
         let (data, http) = try await makeRequest(path: "/session/\(sessionID)/abort", method: "POST")
         if http.statusCode != 200 {
             throw APIError.httpError(statusCode: http.statusCode, data: data)
@@ -469,6 +557,10 @@ actor APIClient {
     }
 
     func sessionStatus() async throws -> [String: SessionStatus] {
+        if generation == .v2 {
+            let (data, _) = try await makeRequest(path: "/api/session/active")
+            return V2Mapper.activeStatuses(data: data)
+        }
         let (data, _) = try await makeRequest(path: "/session/status")
         return try JSONDecoder().decode([String: SessionStatus].self, from: data)
     }
@@ -500,6 +592,17 @@ actor APIClient {
     }
 
     func pendingPermissions() async throws -> [PermissionRequest] {
+        try await pendingPermissions(sessionID: nil)
+    }
+
+    /// V1 ignores the session (global route); v2 uses the session-scoped
+    /// permission list and returns [] without a session.
+    func pendingPermissions(sessionID: String?) async throws -> [PermissionRequest] {
+        if generation == .v2 {
+            guard let sessionID, !sessionID.isEmpty else { return [] }
+            let (data, _) = try await makeRequest(path: "/api/session/\(sessionID)/permission")
+            return V2Mapper.permissions(data: data)
+        }
         let (data, _) = try await makeRequest(path: "/permission")
         return try JSONDecoder().decode([PermissionRequest].self, from: data)
     }
@@ -507,6 +610,18 @@ actor APIClient {
     func respondPermission(sessionID: String, permissionID: String, response: PermissionResponse) async throws {
         struct Body: Encodable {
             let response: PermissionResponse
+        }
+        if generation == .v2 {
+            let bodyData = try JSONSerialization.data(withJSONObject: V2Mapper.permissionReplyBody(response))
+            let (responseData, http) = try await makeRequest(
+                path: "/api/session/\(sessionID)/permission/\(permissionID)/reply",
+                method: "POST",
+                body: bodyData
+            )
+            guard http.statusCode == 204 else {
+                throw APIError.httpError(statusCode: http.statusCode, data: responseData)
+            }
+            return
         }
         let data = try JSONEncoder().encode(Body(response: response))
         let (responseData, http) = try await makeRequest(
@@ -520,11 +635,41 @@ actor APIClient {
     }
 
     func pendingQuestions() async throws -> [QuestionRequest] {
+        try await pendingQuestions(sessionID: nil)
+    }
+
+    /// V1 ignores the session (global route); v2 uses the session-scoped
+    /// form list and fills the reply table used by reply/reject.
+    func pendingQuestions(sessionID: String?) async throws -> [QuestionRequest] {
+        if generation == .v2 {
+            guard let sessionID, !sessionID.isEmpty else { return [] }
+            let (data, _) = try await makeRequest(path: "/api/session/\(sessionID)/form")
+            let forms = V2Mapper.forms(data: data)
+            for form in forms {
+                v2FormRecords[form.record.formID] = form.record
+            }
+            return forms.map(\.request)
+        }
         let (data, _) = try await makeRequest(path: "/question")
         return try JSONDecoder().decode([QuestionRequest].self, from: data)
     }
 
     func replyQuestion(requestID: String, answers: [[String]]) async throws {
+        if generation == .v2 {
+            guard let record = v2FormRecords[requestID] else {
+                throw APIError.httpError(statusCode: 404, data: Data())
+            }
+            let body = try V2Mapper.replyBody(for: answers, record: record)
+            let (responseData, http) = try await makeRequest(
+                path: "/api/session/\(record.sessionID)/form/\(requestID)/reply",
+                method: "POST",
+                body: try JSONSerialization.data(withJSONObject: body)
+            )
+            guard http.statusCode == 204 else {
+                throw APIError.httpError(statusCode: http.statusCode, data: responseData)
+            }
+            return
+        }
         struct Body: Encodable {
             let answers: [[String]]
         }
@@ -534,11 +679,27 @@ actor APIClient {
     }
 
     func rejectQuestion(requestID: String) async throws {
+        if generation == .v2 {
+            guard let record = v2FormRecords[requestID] else {
+                throw APIError.httpError(statusCode: 404, data: Data())
+            }
+            let (responseData, http) = try await makeRequest(
+                path: "/api/session/\(record.sessionID)/form/\(requestID)",
+                method: "DELETE"
+            )
+            guard http.statusCode == 204 else {
+                throw APIError.httpError(statusCode: http.statusCode, data: responseData)
+            }
+            return
+        }
         let (responseData, _) = try await makeRequest(path: "/question/\(requestID)/reject", method: "POST")
         try acceptEmptyOrJSONBoolean(responseData)
     }
 
     func providers() async throws -> ProvidersResponse {
+        if generation == .v2 {
+            return try await v2Providers()
+        }
         let (data, _) = try await makeRequest(path: "/config/providers")
         return try JSONDecoder().decode(ProvidersResponse.self, from: data)
     }
@@ -547,26 +708,47 @@ actor APIClient {
     /// connected (authenticated or keyless-local), used to scope the model
     /// picker to models the user can actually run.
     func providerRegistry() async throws -> ProviderRegistryResponse {
+        if generation == .v2 {
+            let (modelData, _) = try await makeRequest(path: "/api/model")
+            let (providerData, _) = try await makeRequest(path: "/api/provider")
+            return V2Mapper.providerRegistry(modelData: modelData, providerData: providerData)
+        }
         let (data, _) = try await makeRequest(path: "/provider")
         return try JSONDecoder().decode(ProviderRegistryResponse.self, from: data)
     }
 
     func agents() async throws -> [AgentInfo] {
+        if generation == .v2 {
+            let (data, _) = try await makeRequest(path: "/api/agent")
+            return V2Mapper.agents(data: data)
+        }
         let (data, _) = try await makeRequest(path: "/agent")
         return try JSONDecoder().decode([AgentInfo].self, from: data)
     }
 
     func sessionDiff(sessionID: String) async throws -> [FileDiff] {
+        if generation == .v2 {
+            let (data, _) = try await makeRequest(path: "/api/session/\(sessionID)/diff")
+            return V2Mapper.fileDiffs(data: data)
+        }
         let (data, _) = try await makeRequest(path: "/session/\(sessionID)/diff")
         return try JSONDecoder().decode([FileDiff].self, from: data)
     }
 
     func sessionTodos(sessionID: String) async throws -> [TodoItem] {
+        if generation == .v2 {
+            // No todo route on v2 (spec: Todos). Return empty without a
+            // request and without scanning messages.
+            return []
+        }
         let (data, _) = try await makeRequest(path: "/session/\(sessionID)/todo")
         return try JSONDecoder().decode([TodoItem].self, from: data)
     }
 
     func fileList(path: String = "", directory: String? = nil) async throws -> [FileNode] {
+        if generation == .v2 {
+            return try await v2FileList(path: path, directory: directory)
+        }
         var queryItems = [URLQueryItem(name: "path", value: path)]
         if let directory, !directory.isEmpty {
             queryItems.append(URLQueryItem(name: "directory", value: directory))
@@ -576,6 +758,9 @@ actor APIClient {
     }
 
     func fileContent(path: String, directory: String? = nil) async throws -> FileContent {
+        if generation == .v2 {
+            return try await v2FileContent(path: path, directory: directory)
+        }
         var queryItems = [URLQueryItem(name: "path", value: path)]
         if let directory, !directory.isEmpty {
             queryItems.append(URLQueryItem(name: "directory", value: directory))
@@ -589,6 +774,9 @@ actor APIClient {
     }
 
     func findFile(query: String, limit: Int, directory: String?) async throws -> [String] {
+        if generation == .v2 {
+            return try await v2FindFile(query: query, limit: limit, directory: directory)
+        }
         var queryItems = [
             URLQueryItem(name: "query", value: query),
             URLQueryItem(name: "limit", value: String(limit)),
@@ -601,11 +789,25 @@ actor APIClient {
     }
 
     func fileStatus() async throws -> [FileStatusEntry] {
+        if generation == .v2 {
+            let (data, _) = try await makeRequest(path: "/api/vcs/status")
+            return V2Mapper.fileStatusEntries(data: data)
+        }
         let (data, _) = try await makeRequest(path: "/file/status")
         return try JSONDecoder().decode([FileStatusEntry].self, from: data)
     }
 
     func forkSession(sessionID: String, messageID: String? = nil) async throws -> Session {
+        if generation == .v2 {
+            // The v2 field name is `before`, not `messageID`.
+            let body: [String: Any] = messageID.map { ["before": $0] } ?? [:]
+            let (responseData, _) = try await makeRequest(
+                path: "/api/session/\(sessionID)/fork",
+                method: "POST",
+                body: try JSONSerialization.data(withJSONObject: body)
+            )
+            return try V2Mapper.sessionFromEnvelope(responseData)
+        }
         struct ForkBody: Encodable {
             let messageID: String?
         }
@@ -620,6 +822,21 @@ actor APIClient {
     }
 
     func revertSession(sessionID: String, messageID: String, partID: String? = nil) async throws -> Session {
+        if generation == .v2 {
+            // Stage the whole message; `partID` is ignored on v2. The stage
+            // body ({data:{messageID, files}}) is not decoded as a Session —
+            // stage, then GET, then map.
+            let (stageData, http) = try await makeRequest(
+                path: "/api/session/\(sessionID)/revert/stage",
+                method: "POST",
+                body: try JSONSerialization.data(withJSONObject: ["messageID": messageID])
+            )
+            guard http.statusCode == 200 else {
+                throw APIError.httpError(statusCode: http.statusCode, data: stageData)
+            }
+            let (sessionData, _) = try await makeRequest(path: "/api/session/\(sessionID)")
+            return try V2Mapper.sessionFromEnvelope(sessionData)
+        }
         struct RevertBody: Encodable {
             let messageID: String
             let partID: String?
@@ -982,10 +1199,14 @@ protocol APIClientProtocol: Actor {
     func abort(sessionID: String) async throws
     func sessionStatus() async throws -> [String: SessionStatus]
     func pendingPermissions() async throws -> [APIClient.PermissionRequest]
+    func pendingPermissions(sessionID: String?) async throws -> [APIClient.PermissionRequest]
     func respondPermission(sessionID: String, permissionID: String, response: APIClient.PermissionResponse) async throws
     func pendingQuestions() async throws -> [QuestionRequest]
+    func pendingQuestions(sessionID: String?) async throws -> [QuestionRequest]
     func replyQuestion(requestID: String, answers: [[String]]) async throws
     func rejectQuestion(requestID: String) async throws
+    func rememberForm(_ record: V2FormRecord)
+    func setV2IdleProbe(_ probe: (@Sendable () async -> Bool)?)
     func providers() async throws -> ProvidersResponse
     func providerRegistry() async throws -> ProviderRegistryResponse
     func agents() async throws -> [AgentInfo]
@@ -1011,6 +1232,14 @@ extension APIClientProtocol {
     }
 
     func setGeneration(_ generation: APIGeneration) {}
+    func setV2IdleProbe(_ probe: (@Sendable () async -> Bool)?) {}
+    func rememberForm(_ record: V2FormRecord) {}
+    func pendingPermissions(sessionID: String?) async throws -> [APIClient.PermissionRequest] {
+        try await pendingPermissions()
+    }
+    func pendingQuestions(sessionID: String?) async throws -> [QuestionRequest] {
+        try await pendingQuestions()
+    }
 }
 
 protocol FileDirectorySearching: APIClientProtocol {
