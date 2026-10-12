@@ -90,6 +90,22 @@ jobs:
         run: |
           printf '%s' "$P8_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/AuthKey.p8"
 
+      - name: Sanity-check ASC secret shapes (values never printed)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "ASC_KEY_ID length: ${#ASC_KEY_ID} (expected 10, like 6JBG26P3NC)"
+          echo "ASC_ISSUER_ID length: ${#ASC_ISSUER_ID} (expected 36, a UUID)"
+          if [[ "$ASC_ISSUER_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            echo "ASC_ISSUER_ID is UUID-shaped: yes"
+          else
+            echo "ASC_ISSUER_ID is UUID-shaped: NO - this is the 401 suspect"
+          fi
+          echo "APPLE_TEAM_ID length: ${#APPLE_TEAM_ID} (expected 10)"
+          head -c 40 "$RUNNER_TEMP/AuthKey.p8" | grep -q "BEGIN PRIVATE KEY" && echo "AuthKey.p8 starts with a PEM header: yes" || echo "AuthKey.p8 starts with a PEM header: NO - ASC_API_KEY_P8 is corrupt"
+
       - name: Write ExportOptions.plist
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
