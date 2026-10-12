@@ -35,11 +35,11 @@ final class Tier4OfflineGate {
                     Tier4OfflineGate.shared.credentials[key]
                 }
             },
-            delete: { key in
-                MainActor.assumeIsolated {
-                    Tier4OfflineGate.shared.credentials.removeValue(forKey: key)
-                }
-            }
+			delete: { key in
+				MainActor.assumeIsolated {
+					_ = Tier4OfflineGate.shared.credentials.removeValue(forKey: key)
+				}
+			}
         )
     }
 }
