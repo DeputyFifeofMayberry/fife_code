@@ -1,6 +1,6 @@
 # OpenCode server v2 compatibility — implementation notes
 
-Status: implemented on `opencodev2-integration`；live 验证（contract script + TestFlight）待做。
+Status: implemented on `opencodev2-integration`；live contract gate 已过（45/45，2026-10-12）；TestFlight 验证待做。
 日期：2026-10-12
 Spec：`docs/v2_server_compatibility.md`（wire 契约的唯一来源）
 
@@ -25,5 +25,9 @@ Spec：`docs/v2_server_compatibility.md`（wire 契约的唯一来源）
 
 ## 未决
 
-- v2 `type:"synthetic"` 的真实字段布局未实测（spec 未写）；实现按 user 行同构（`text`/`payload.text`）。待从 live server 抓一个真实 body 后固化 fixture；若形状不符，回退为 dark 并回报。
-- `scripts/v2_contract_check.py` 对 2.0.26 的实跑（需要 server 密码）。
+- ~~`scripts/v2_contract_check.py` 对 2.0.26 的实跑~~ **已通过**：2026-10-12 对 live server（`http://127.0.0.1:4096`，`2.0.26-local.27a15e7935`）45/45 全过、exit 0。无 spec 漂移。
+- ~~v2 `type:"synthetic"` 的真实字段布局未实测~~ **已实测**：扫描 live server 全部 69 个 session 共 297 条 synthetic 行，仅两种形状且都带顶层 `text`（mapper 主路径直接命中）：
+  1. `{id, time.created, text, type}`（14 条，plan-mode system-reminder）
+  2. `{id, time.created, text, description, metadata.instruction.paths, type}`（283 条，AGENTS.md 指令加载，`description` 如 "Loaded packages\cli\AGENTS.md"）
+  `payload.text` 从未出现；额外字段 mapper 不读、无害。`V2MapperTests` 的 synthetic fixture 已替换为真实抓取的两种 body（一条覆盖富形状 + 一条覆盖最小形状）。未发现 `<task>` 回执语法的 wire 端 body——回执卡片文本由客户端自行合成，wire 侧只需 synthetic 行以 user 形态到达（已证实）。
+- 待做：PR #1 合并（用户决定）→ TestFlight 真机验证（检测连版本号、流式、图片、agent/model 切换、permission/question 卡、404 archive、todos 空、Car Mode、回执卡）。

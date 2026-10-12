@@ -147,13 +147,21 @@ struct V2MapperTests {
 
     @Test func syntheticItemMapsToReceiptRow() throws {
         // Resolved open question: v2 delivers the task receipt as a
-        // type:"synthetic" message; map it so the card renders.
-        let json = #"{"data":[{"id":"msg_t","type":"synthetic","text":"<task id=\"t\">x</task>","time":{"created":3}}]}"#
+        // type:"synthetic" message; map it so the card renders. Both bodies
+        // below were captured live from the 2.0.26 server (2026-10-12 scan:
+        // 297 synthetic rows, all carrying top-level `text`; the richer
+        // shape's `description`/`metadata` extras are not read by the
+        // mapper). The receipt card itself is parsed client-side from the
+        // text, so mapping only needs the row to arrive user-like.
+        let json = #"{"data":[{"id":"msg_12e179521001oykjD7tWtzzVQl","metadata":{"instruction":{"paths":["Y:\\opencode_fife\\packages\\cli\\AGENTS.md"]}},"time":{"created":1791774659873},"text":"Instructions from: Y:\\opencode_fife\\packages\\cli\\AGENTS.md\n# CLI and TUI development guide\r\n\r\n- Use `@opencode/client` and the location-scoped data in packages/tui/src/context/data.tsx instead of adding dependencies on legacy sync state.\r\n- Preserve established TUI behavior unless the task intentionally changes it.\r\n","description":"Loaded packages\\cli\\AGENTS.md","type":"synthetic"},{"id":"msg_131260b0e001xYx6Ikns1XreOq","time":{"created":1791825939260},"text":"<system-reminder>\nYou are NO LONGER in Plan mode. The previous Plan restrictions no longer apply. Any Plan mode instructions from earlier in this conversation are no longer active.\n</system-reminder>","type":"synthetic"}]}"#
         let messages = try V2Mapper.messages(sessionID: "ses_1", data: Data(json.utf8))
-        #expect(messages.count == 1)
+        #expect(messages.count == 2)
         #expect(messages[0].info.role == "user")
         #expect(messages[0].parts[0].synthetic == true)
-        #expect(messages[0].parts[0].text?.contains("<task") == true)
+        #expect(messages[0].parts[0].text?.hasPrefix("Instructions from: Y:\\opencode_fife") == true)
+        #expect(messages[0].parts[0].text?.contains("Preserve established TUI behavior") == true)
+        #expect(messages[1].parts[0].synthetic == true)
+        #expect(messages[1].parts[0].text?.hasPrefix("<system-reminder>") == true)
     }
 
     // MARK: - Prompt encodes
