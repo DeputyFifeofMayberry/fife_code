@@ -1,6 +1,6 @@
 # OpenCode iOS Client — Docs 索引
 
-> 最后更新：2026-09-27（background task 回执卡片实现；agent 目录校验与删除失败可见）。查阅与检索任何文档请先参考本索引。
+> 最后更新：2026-10-12（v2 server 兼容实现于 opencodev2-integration 分支；spec 文档入索引）。查阅与检索任何文档请先参考本索引。
 
 ## 顶层主文档（living）
 
@@ -12,6 +12,7 @@
 | `tests.md` | 测试体系设计规范（Tier 1–4） | living |
 | `design.md` | 视觉设计 Spec（Quiet Tech 风格） | living |
 | `OpenCode_Web_API.md` | OpenCode server HTTP API 参考（上游快照，以官方文档与 live `/doc` 为准） | living reference |
+| `v2_server_compatibility.md` | V1/V2 server 兼容 spec（wire 契约唯一来源，客户端 v2 分支按此实现） | living，已实现待 live 验证 |
 | `lessons.md` | 工程复盘与可复用经验 | living |
 
 ## features/ — 按 feature 的文档
@@ -25,6 +26,7 @@
 | `push_notifications/` | 后台推送通知方案 | `research.md` | 调研 |
 | `localization/` | en/zh-Hans 双语本地化 | `research.md` | Settings 已有 en/zh；research 文档偏旧 |
 | `agent_catalog_validation/` | Agent 目录校验与删除失败可见 | `notes.md` | shipped；选中 agent 对照当前 server `/agent`，delete 非 2xx 带状态码与 body |
+| `v2_server_compatibility/` | OpenCode server v2 兼容（检测 + REST/SSE 分支） | `notes.md` | 已实现（`opencodev2-integration`）；live 验证待做 |
 
 ## archive/ — 一次性工作记录与冻结决策（只进不改）
 
