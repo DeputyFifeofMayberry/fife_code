@@ -218,7 +218,7 @@ struct V2APIWireTests {
             V2StubRoute(path: "/api/session/s1/agent", method: "POST", status: 204, body: ""),
             V2StubRoute(path: "/api/session/s1/model", method: "POST", status: 204, body: ""),
             V2StubRoute(path: "/api/session/s1/prompt", method: "POST", status: 200, body: #"{"data":{"id":"msg_u"}}"#),
-            V2StubRoute(path: "/api/session/s1/message", method: "GET", status: 200, body: #"{"data":[{"id":"msg_u","type":"user","text":"q","time":{"created":1}},{"id":"msg_a","type":"assistant","parentID":"msg_u","content":[{"type":"text","text":\#(jsonEscape(envelope))}],"time":{"created":2}}]}"#)
+            V2StubRoute(path: "/api/session/s1/message", method: "GET", status: 200, body: #"{"data":[{"id":"msg_u","type":"user","text":"q","time":{"created":1}},{"id":"msg_a","type":"assistant","parentID":"msg_u","content":[{"type":"text","text":\#(jsonStringLiteral(envelope))}],"time":{"created":2}}]}"#)
         ])
         defer { cleanup(host) }
         let api = client(host: host)
@@ -244,7 +244,7 @@ struct V2APIWireTests {
             V2StubRoute(path: "/api/session/s1/agent", method: "POST", status: 204, body: ""),
             V2StubRoute(path: "/api/session/s1/model", method: "POST", status: 204, body: ""),
             V2StubRoute(path: "/api/session/s1/prompt", method: "POST", status: 409, body: "already admitted"),
-            V2StubRoute(path: "/api/session/s1/message", method: "GET", status: 200, body: #"{"data":[{"id":"msg_u","type":"user","text":"q","time":{"created":1}},{"id":"msg_a","type":"assistant","parentID":"msg_u","content":[{"type":"text","text":\#(jsonEscape(envelope))}],"time":{"created":2}}]}"#)
+            V2StubRoute(path: "/api/session/s1/message", method: "GET", status: 200, body: #"{"data":[{"id":"msg_u","type":"user","text":"q","time":{"created":1}},{"id":"msg_a","type":"assistant","parentID":"msg_u","content":[{"type":"text","text":\#(jsonStringLiteral(envelope))}],"time":{"created":2}}]}"#)
         ])
         defer { cleanup(host) }
         let api = client(host: host)
@@ -456,8 +456,10 @@ struct V2APIWireTests {
     }
 }
 
-private func jsonEscape(_ json: String) -> String {
-    let data = try? JSONSerialization.data(withJSONObject: [json])
-    let array = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String] }
-    return array?.first ?? ""
+/// JSON string literal for `value` (quotes and escapes included) so it can be
+/// interpolated into a fixture body.
+private func jsonStringLiteral(_ value: String) -> String {
+    let wrapped = try! JSONSerialization.data(withJSONObject: [value])
+    // "["..."]" -> "\"...\""
+    return String(decoding: wrapped.dropFirst().dropLast(), as: UTF8.self)
 }
