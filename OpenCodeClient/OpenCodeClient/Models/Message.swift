@@ -340,6 +340,16 @@ nonisolated struct Message: Codable, Identifiable {
             total = try c.decodeIfPresent(Int.self, forKey: .total)
                 ?? (input + output + reasoning + (cache?.read ?? 0) + (cache?.write ?? 0))
         }
+
+        /// Mapper-side construction (v2 payloads): `total` is synthesized the
+        /// same way as decoding.
+        init(input: Int, output: Int, reasoning: Int, cache: CacheInfo?) {
+            self.input = input
+            self.output = output
+            self.reasoning = reasoning
+            self.cache = cache
+            self.total = input + output + reasoning + (cache?.read ?? 0) + (cache?.write ?? 0)
+        }
     }
 
     struct TimeInfo: Codable {
@@ -440,6 +450,35 @@ nonisolated struct MessageWithParts: Codable {
     /// tools or an older payload without `state.time`.
     var toolRunSeconds: Double {
         parts.compactMap(\.toolRunSeconds).reduce(0, +)
+    }
+}
+
+extension Message {
+    /// Returns a copy with `structured` set (v2 structured send). When the
+    /// turn is known idle and the server omitted `time.completed`, synthesize
+    /// it from `time.created` so the existing completed check passes.
+    func withStructured(_ structured: WireJSON, completingWhenIdle isIdle: Bool) -> Message {
+        let resolvedTime: TimeInfo
+        if time.completed == nil, isIdle {
+            resolvedTime = TimeInfo(created: time.created, completed: time.created)
+        } else {
+            resolvedTime = time
+        }
+        return Message(
+            id: id,
+            sessionID: sessionID,
+            role: role,
+            parentID: parentID,
+            providerID: providerID,
+            modelID: modelID,
+            model: model,
+            error: error,
+            time: resolvedTime,
+            finish: finish,
+            tokens: tokens,
+            cost: cost,
+            structured: structured
+        )
     }
 }
 

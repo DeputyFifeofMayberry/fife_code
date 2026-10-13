@@ -100,27 +100,17 @@ extension AppState {
         }
 
         await apiClient.configure(baseURL: baseURL, username: username.isEmpty ? nil : username, password: password.isEmpty ? nil : password)
+        // Early-stop hook for the v2 structured-send poll (harmless on v1).
+        await apiClient.setV2IdleProbe { [weak self] in
+            guard let self else { return false }
+            return await self.v2IdleProbeValue()
+        }
         guard isCurrentHostRequest(snapshot) else { return }
         do {
             updateConnectionDiagnostic(phase: .health, message: L10n.t(.hostDiagnosticCheckingHealthURL, baseURL))
-            let health = try await apiClient.health()
+            let detection = try await apiClient.detectGeneration()
             guard isCurrentHostRequest(snapshot) else { return }
-            isConnected = health.healthy
-            serverVersion = health.version
-            if isConnected {
-                updateConnectionDiagnostic(
-                    phase: .connected,
-                    message: L10n.t(.hostDiagnosticConnectedToOpenCode, health.version.map { " \($0)" } ?? "")
-                )
-                connectSSE()
-            } else {
-                connectionError = L10n.t(.hostDiagnosticHealthUnhealthy)
-                updateConnectionDiagnostic(
-                    phase: .failed,
-                    message: connectionError ?? L10n.t(.hostDiagnosticHealthUnhealthy),
-                    recoveryHint: L10n.t(.hostDiagnosticHintCheckServerLogs)
-                )
-            }
+            await applyGenerationDetection(detection)
         } catch {
             guard isCurrentHostRequest(snapshot) else { return }
             isConnected = false
@@ -132,6 +122,85 @@ extension AppState {
                 recoveryHint: L10n.t(.hostDiagnosticHintVerifyHostConfig)
             )
         }
+    }
+
+    /// Applies the probe outcome: stores the detected generation (AppState,
+    /// APIClient, host profile), then either connects or records why not.
+    /// Per the approved deviation from the spec's Detection section,
+    /// `isConnected` flips on the winning probe — no session-list gate.
+    func applyGenerationDetection(_ detection: GenerationDetection) async {
+        if let generation = detection.generation {
+            serverGeneration = generation
+            persistDetectedGeneration(generation)
+        }
+        if let version = detection.version {
+            serverVersion = version
+        }
+        switch detection {
+        case .v1, .v2:
+            await apiClient.setGeneration(detection.generation ?? .v1)
+            isConnected = true
+            updateConnectionDiagnostic(
+                phase: .connected,
+                message: L10n.t(.hostDiagnosticConnectedToOpenCode, detection.version.map { " \($0)" } ?? "")
+            )
+            connectSSE()
+        case .v1Unhealthy:
+            await apiClient.setGeneration(.v1)
+            isConnected = false
+            connectionError = L10n.t(.hostDiagnosticHealthUnhealthy)
+            updateConnectionDiagnostic(
+                phase: .failed,
+                message: connectionError ?? L10n.t(.hostDiagnosticHealthUnhealthy),
+                recoveryHint: L10n.t(.hostDiagnosticHintCheckServerLogs)
+            )
+        case .authFailure(let healthStatus, _):
+            isConnected = false
+            let message = friendlyConnectionError(APIError.httpError(statusCode: healthStatus, data: Data()), phase: .health)
+            connectionError = message
+            updateConnectionDiagnostic(
+                phase: .failed,
+                message: message,
+                recoveryHint: L10n.t(.hostDiagnosticHintVerifyHostConfig)
+            )
+        case .transportFailure(let code, _):
+            isConnected = false
+            let message = friendlyConnectionError(NSError(domain: NSURLErrorDomain, code: code), phase: .health)
+            connectionError = message
+            updateConnectionDiagnostic(
+                phase: .failed,
+                message: message,
+                recoveryHint: L10n.t(.hostDiagnosticHintVerifyHostConfig)
+            )
+        case .unrecognized(let healthStatus, let infoStatus):
+            isConnected = false
+            let message = L10n.t(
+                .hostConnectionErrorUnrecognizedGeneration,
+                healthStatus.map(String.init) ?? "?",
+                infoStatus.map(String.init) ?? "?"
+            )
+            connectionError = message
+            updateConnectionDiagnostic(
+                phase: .failed,
+                message: message,
+                recoveryHint: L10n.t(.hostDiagnosticHintVerifyHostConfig)
+            )
+        }
+    }
+
+    private func persistDetectedGeneration(_ generation: APIGeneration) {
+        guard let index = hostProfiles.firstIndex(where: { $0.id == currentHostProfileID }) else { return }
+        guard hostProfiles[index].apiGeneration != generation else { return }
+        hostProfiles[index].apiGeneration = generation
+        saveHostProfiles()
+    }
+
+    /// Poll early-stop for the v2 structured send: true when the last
+    /// session status observed for the current session is idle or retry.
+    func v2IdleProbeValue() -> Bool {
+        guard let sessionID = currentSessionID else { return false }
+        let type = sessionStatuses[sessionID]?.type
+        return type == "idle" || type == "retry"
     }
 
     func loadProjects() async {

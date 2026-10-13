@@ -418,6 +418,10 @@ final class AppState {
     }
     var isConnected: Bool = false
     var serverVersion: String?
+    /// Wire generation for the connected host, set by the detection probe in
+    /// `testConnection` and reset on host switches
+    /// (docs/v2_server_compatibility.md, Detection).
+    var serverGeneration: APIGeneration = .auto
     var connectionError: String?
     var connectionDiagnostic: ConnectionDiagnostic?
     var pendingSSHHostKeyMismatch: SSHHostKeyMismatch?

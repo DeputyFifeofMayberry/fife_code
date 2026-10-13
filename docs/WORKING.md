@@ -4,6 +4,14 @@
 
 ## 当前状态
 
+### 2026-10-12 — OpenCode server v2 兼容（opencodev2-integration 分支）
+
+- **背景**：用户 server 已是 v2.0.26，客户端只讲 v1。按 `docs/v2_server_compatibility.md`（wire 契约唯一来源）实现 v1/v2 双协议。
+- **改动**：① 检测——`HostProfile.apiGeneration`（缺失=auto、URL 变更清除），连接时 `/global/health` → `/api/info` 探测（`ServerGeneration.swift`），结果写回 profile；② REST——每个 APIClient 方法按 generation 分支（`APIClient+V2.swift`），精确状态码，archive 写直接 404、todos 空且无请求、form 回复表在 APIClient；③ 纯映射——`V2Mapper.swift` 全 spec 表，产物为既有模型；④ SSE——v2 帧 `{id,type,data}` 归一化后按 spec SSE 表翻译进既有 handler（数据路径与 v1 共用），`session.created/renamed/metadata.updated` 走 GET+upsert。
+- **两处已批准偏差**：v2 `type:"synthetic"` 消息被映射（回执卡片可见）；`isConnected` 探测成功即置位（不加 spec 的 session-list gate）。
+- **测试**：`ServerGenerationTests` / `V2MapperTests` / `V2APIWireTests` / `V2SSETests` 四个新文件（探测 saved-body、spec Unit-tests 每行一条、wire 状态码断言、SSE 翻译与收敛）。CI 待跑（Windows 无本地 Xcode）。
+- **未决**：synthetic 真实 body 未实测（fixture 按 user 行同构，若不符回退 dark）；`v2_contract_check.py` 实跑与 TestFlight 验证待做。
+
 - **最后更新**：2026-10-08
 - **分支**：`fix/chat-session-scroll-anchor`
 - **编译/测试**：`OpenCodeClientTests` 全绿（569 条，含新增 subagent 聚合 6 条）。UI：`SessionScrollAnchorUITests` 2/2 与 `ToolCardsUITests` 1/1 通过（iPhone 16 Pro `3EB51FEF-C951-4485-AD0F-33463C66DBEB`，iOS 18.4）。

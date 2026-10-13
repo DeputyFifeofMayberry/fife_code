@@ -15,11 +15,12 @@ extension AppState {
     }
 
     /// SSE permission events are not replayed; poll pending permissions so users can enter
-    /// an in-progress session and still see the warning.
+    /// an in-progress session and still see the warning. The session id scopes
+    /// the v2 permission list (ignored on v1's global route).
     func refreshPendingPermissions() async {
         guard isConnected else { return }
         do {
-            let requests = try await apiClient.pendingPermissions()
+            let requests = try await apiClient.pendingPermissions(sessionID: currentSessionID)
             pendingPermissions = PermissionController.fromPendingRequests(requests)
         } catch {
             // Keep the current list on errors.
@@ -49,7 +50,7 @@ extension AppState {
     func refreshPendingQuestions() async {
         guard isConnected else { return }
         do {
-            pendingQuestions = try await apiClient.pendingQuestions()
+            pendingQuestions = try await apiClient.pendingQuestions(sessionID: currentSessionID)
         } catch {
             connectionError = error.localizedDescription
         }

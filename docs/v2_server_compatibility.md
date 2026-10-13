@@ -1,6 +1,6 @@
 # V1 / V2 server compatibility
 
-Status: waiting for the server to reach feature parity before client implementation. The app code is not changed. Re-checked 2026-09-30 against upstream `v2.0.20` and master through PR #189; see "Changes since 2.0.18" at the end.
+Status: implemented on the `opencodev2-integration` branch (client speaks v1 and v2 per this spec). Two approved deviations from the text below: (1) `type: "synthetic"` messages ARE mapped so the task receipt card renders (the message-map row that says "anything else, including idle, skip" keeps skipping everything else); (2) `isConnected` flips on the winning probe — the "only after the session list succeeds" gate is not applied. The method-table `sessionStatus` row ("no poll") is superseded by the SSE section: the client calls `GET /api/session/active` at refresh points and `session.status` events update per-id from there. Re-checked 2026-09-30 against upstream `v2.0.20` and master through PR #189; see "Changes since 2.0.18" at the end. Live verification on 2.0.26 is still pending (contract script + TestFlight).
 
 Measured on tag `v2.0.18`, a local `serve` process, Basic auth user `opencode`. The diff from `v2.0.18` to `v2.0.20` does not change any route, event name, or body this doc maps (only new credential routes and an optional provider-response field on session errors), so every mapping below stays the measured 2.0.18 wire behavior.
 

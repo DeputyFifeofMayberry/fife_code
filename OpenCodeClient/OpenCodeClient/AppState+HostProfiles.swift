@@ -177,6 +177,11 @@ extension AppState {
     func persistRuntimeToCurrentHostProfile() {
         guard let index = hostProfiles.firstIndex(where: { $0.id == currentHostProfileID }) else { return }
         var profile = hostProfiles[index]
+        // The detected generation is bound to the host URL: a URL change
+        // invalidates it until the next probe.
+        if profile.serverURL != serverURL {
+            profile.apiGeneration = nil
+        }
         profile.serverURL = serverURL
         profile.lastUsedAt = Date()
 
@@ -241,6 +246,10 @@ extension AppState {
         hostProfileBlobUnreadable = false
         hostProfileLoadError = nil
         if let index = hostProfiles.firstIndex(where: { $0.id == saved.id }) {
+            // Same URL binding rule as persistRuntimeToCurrentHostProfile.
+            if hostProfiles[index].serverURL != saved.serverURL {
+                saved.apiGeneration = nil
+            }
             hostProfiles[index] = saved
         } else {
             hostProfiles.append(saved)
@@ -473,6 +482,7 @@ extension AppState {
         connectionError = nil
         connectionDiagnostic = nil
         serverVersion = nil
+        serverGeneration = .auto
         projects = []
         serverCurrentProjectWorktree = nil
         sessions = []

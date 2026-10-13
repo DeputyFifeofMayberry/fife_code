@@ -59,6 +59,10 @@ struct HostProfile: Codable, Equatable, Identifiable {
     var basicAuth: BasicAuthConfig?
     var ssh: SSHTunnelConfig?
     var lastUsedAt: Date?
+    /// Wire generation detected by the connect probe
+    /// (docs/v2_server_compatibility.md, Detection). Missing decodes as
+    /// `auto`; cleared when `serverURL` changes.
+    var apiGeneration: APIGeneration? = nil
 
     var displayName: String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)

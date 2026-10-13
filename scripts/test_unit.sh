@@ -51,4 +51,5 @@ else
 fi
 
 echo "test-without-building ..."
-xcodebuild test-without-building "${TEST_ARGS[@]}" 2>&1 | grep -E 'error:|✘|✔|Test Suite|Test run' | tail -60
+# tail window wide enough that ✘ lines survive a parallel run's trailing ✔ flood
+xcodebuild test-without-building "${TEST_ARGS[@]}" 2>&1 | grep -E 'error:|✘|✔|Test Suite|Test run' | tail -400

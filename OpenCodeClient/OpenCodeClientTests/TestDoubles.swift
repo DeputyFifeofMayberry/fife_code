@@ -65,9 +65,25 @@ actor MockAPIClient: APIClientProtocol {
     var configuredBaseURL: String?
     var configuredUsername: String?
     var configuredPassword: String?
+    var configuredGeneration: APIGeneration?
+    private var generationDetectionOverride: GenerationDetection?
 
     var healthResult = HealthResponse(healthy: true, version: "test-version")
     var healthError: Error?
+
+    func setGenerationDetectionOverride(_ detection: GenerationDetection?) {
+        generationDetectionOverride = detection
+    }
+
+    func detectGeneration() async throws -> GenerationDetection {
+        if let generationDetectionOverride { return generationDetectionOverride }
+        let health = try await health()
+        return health.healthy ? .v1(version: health.version) : .v1Unhealthy(version: health.version)
+    }
+
+    func setGeneration(_ generation: APIGeneration) {
+        configuredGeneration = generation
+    }
     var sessionsResult: [Session] = []
     var sessionsByLimit: [Int: [Session]] = [:]
     var sessionLimitRequests: [Int] = []

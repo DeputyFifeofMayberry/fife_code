@@ -196,10 +196,11 @@ actor SSEClient {
     func connectLease(
         baseURL: String,
         username: String? = nil,
-        password: String? = nil
+        password: String? = nil,
+        eventPath: String = "/global/event"
     ) -> SSEStreamLease {
         let urlString = baseURL.hasPrefix("http") ? baseURL : "http://\(baseURL)"
-        guard let url = URL(string: "\(urlString)/global/event") else {
+        guard let url = URL(string: "\(urlString)\(eventPath)") else {
             return SSEStreamLease(
                 events: AsyncThrowingStream { $0.finish(throwing: APIError.invalidURL) },
                 cancel: {}
@@ -264,6 +265,27 @@ actor SSEClient {
         return SSEStreamLease(events: events, cancel: { handle.cancel() })
     }
 
+    /// V1 frames are `{"directory":…,"payload":{"type":…,"properties":{…}}}`;
+    /// v2 frames are `{"id":…,"type":…,"data":{…}}`. `payload` is a required
+    /// v1 field, so a v2 frame can never decode as v1 (and a v1 frame has no
+    /// top-level `type`) — v1-then-v2 is an unambiguous discriminator. v2
+    /// frames are normalized into the v1 event shape (data → properties);
+    /// the AppState v2 dispatch translates per event type. `id`, `created`,
+    /// and `location` are ignored, and `payload.properties` is never read.
+    nonisolated static func decodeFrame(_ data: Data) -> SSEEvent? {
+        if let event = try? JSONDecoder().decode(SSEEvent.self, from: data) {
+            return event
+        }
+        struct V2TypedFrame: Decodable {
+            let type: String
+            let data: [String: AnyCodable]?
+        }
+        guard let frame = try? JSONDecoder().decode(V2TypedFrame.self, from: data) else {
+            return nil
+        }
+        return SSEEvent(directory: nil, payload: SSEPayload(type: frame.type, properties: frame.data))
+    }
+
     private nonisolated static func consume(
         _ bytes: AsyncThrowingStream<UInt8, Error>,
         into continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation
@@ -278,7 +300,7 @@ actor SSEClient {
 
             guard !json.isEmpty, json != "[DONE]" else { return }
             let data = Data(json.utf8)
-            if let event = try? JSONDecoder().decode(SSEEvent.self, from: data) {
+            if let event = Self.decodeFrame(data) {
                 continuation.yield(event)
             }
         }
