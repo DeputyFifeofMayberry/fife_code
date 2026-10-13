@@ -30,4 +30,5 @@ Spec：`docs/v2_server_compatibility.md`（wire 契约的唯一来源）
   1. `{id, time.created, text, type}`（14 条，plan-mode system-reminder）
   2. `{id, time.created, text, description, metadata.instruction.paths, type}`（283 条，AGENTS.md 指令加载，`description` 如 "Loaded packages\cli\AGENTS.md"）
   `payload.text` 从未出现；额外字段 mapper 不读、无害。`V2MapperTests` 的 synthetic fixture 已替换为真实抓取的两种 body（一条覆盖富形状 + 一条覆盖最小形状）。未发现 `<task>` 回执语法的 wire 端 body——回执卡片文本由客户端自行合成，wire 侧只需 synthetic 行以 user 形态到达（已证实）。
-- 待做：PR #1 合并（用户决定）→ TestFlight 真机验证（检测连版本号、流式、图片、agent/model 切换、permission/question 卡、404 archive、todos 空、Car Mode、回执卡）。
+- 待做：~~TestFlight 真机验证~~（build 18 已装，验证进行中）。
+- **Live 发现（2026-10-12/13）**：2.0.26 build 的 `/global/health` 即使凭证错误也返回 200 HTML（SPA fallback 不走 auth 挑战），401 只出现在 `/api/info`。因此探测结果为 `authFailure(healthStatus: 200, infoStatus: 401)` 时，连接错误的用户可见文案曾取 health 腿状态 → 显示误导性的 "HTTP 200"。已修（`applyGenerationDetection` 的 authFailure 分支改为 `infoStatus ?? healthStatus`，显示 "Basic Auth rejected"），含回归测试 `authFailureSurfacesInfoLegRejectionNotHealthStatus`。用户侧当时真实问题：PowerShell 里 `set X=Y` 是 cmd 语法静默无效 → env 未生效 → server 打印随机密码。

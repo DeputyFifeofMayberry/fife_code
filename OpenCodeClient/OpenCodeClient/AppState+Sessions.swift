@@ -154,9 +154,16 @@ extension AppState {
                 message: connectionError ?? L10n.t(.hostDiagnosticHealthUnhealthy),
                 recoveryHint: L10n.t(.hostDiagnosticHintCheckServerLogs)
             )
-        case .authFailure(let healthStatus, _):
+        case .authFailure(let healthStatus, let infoStatus):
             isConnected = false
-            let message = friendlyConnectionError(APIError.httpError(statusCode: healthStatus, data: Data()), phase: .health)
+            // The health leg can sit behind an SPA fallback that never
+            // challenges (this server build answers it with 200 HTML even
+            // for bad credentials), so the informative rejection is the
+            // info leg. Surface that status when the probe captured one.
+            let message = friendlyConnectionError(
+                APIError.httpError(statusCode: infoStatus ?? healthStatus, data: Data()),
+                phase: .health
+            )
             connectionError = message
             updateConnectionDiagnostic(
                 phase: .failed,
