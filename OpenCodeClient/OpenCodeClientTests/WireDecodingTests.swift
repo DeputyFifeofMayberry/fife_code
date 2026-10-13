@@ -224,6 +224,23 @@ struct WireDecodingTests {
         #expect(decoded.messages[2].info.carResponseEnvelope == nil)
     }
 
+    @Test func newestFirstTranscriptDecodesAscendingWithIDTiebreak() throws {
+        // The server returns the transcript newest-first; every downstream
+        // consumer (dedupe, pagination merge, scrollAnchor, revert filter)
+        // assumes old→new. Equal `time.created` breaks on message id, which
+        // is time-ordered (OrderedServerID).
+        let transcript = """
+        [
+          {"info":{"id":"msg_00c","sessionID":"s1","role":"assistant","time":{"created":3000}},"parts":[{"id":"p-c","messageID":"msg_00c","sessionID":"s1","type":"text","text":"newest"}]},
+          {"info":{"id":"msg_00b","sessionID":"s1","role":"assistant","time":{"created":2000}},"parts":[{"id":"p-b","messageID":"msg_00b","sessionID":"s1","type":"text","text":"middle"}]},
+          {"info":{"id":"msg_00a2","sessionID":"s1","role":"user","time":{"created":1000}},"parts":[{"id":"p-a2","messageID":"msg_00a2","sessionID":"s1","type":"text","text":"tie-later"}]},
+          {"info":{"id":"msg_00a1","sessionID":"s1","role":"user","time":{"created":1000}},"parts":[{"id":"p-a1","messageID":"msg_00a1","sessionID":"s1","type":"text","text":"tie-earlier"}]}
+        ]
+        """
+        let decoded = try APIClient.decodeMessageTranscript(Data(transcript.utf8))
+        #expect(decoded.messages.map(\.info.id) == ["msg_00a1", "msg_00a2", "msg_00b", "msg_00c"])
+    }
+
     @Test func fullyCorruptTranscriptThrowsWithoutRecordingBody() throws {
         let transcript = """
         [{"info":{"role":"user","time":{"created":1},"text":"CANARY_ONLY"},"parts":[]}]

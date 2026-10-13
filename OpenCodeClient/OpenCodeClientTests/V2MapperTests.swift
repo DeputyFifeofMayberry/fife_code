@@ -164,6 +164,21 @@ struct V2MapperTests {
         #expect(messages[1].parts[0].text?.hasPrefix("<system-reminder>") == true)
     }
 
+    @Test func newestFirstPayloadMapsAscendingWithIDTiebreak() throws {
+        // Server returns newest-first; map to ascending (time.created, id)
+        // so every transcript consumer sees old→new.
+        let json = """
+        {"data":[
+        {"id":"msg_00c","type":"user","text":"newest","time":{"created":3000}},
+        {"id":"msg_00b","type":"user","text":"middle","time":{"created":2000}},
+        {"id":"msg_00a2","type":"user","text":"tie-later","time":{"created":1000}},
+        {"id":"msg_00a1","type":"user","text":"tie-earlier","time":{"created":1000}}
+        ]}
+        """
+        let messages = try V2Mapper.messages(sessionID: "ses_1", data: Data(json.utf8))
+        #expect(messages.map(\.info.id) == ["msg_00a1", "msg_00a2", "msg_00b", "msg_00c"])
+    }
+
     // MARK: - Prompt encodes
 
     @Test func v2PromptEncodeText() {
