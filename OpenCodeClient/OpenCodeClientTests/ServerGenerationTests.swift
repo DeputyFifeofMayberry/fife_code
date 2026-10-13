@@ -238,6 +238,22 @@ struct GenerationConnectFlowTests {
         #expect(state.connectionError?.contains("404") == true)
     }
 
+    @Test @MainActor func authFailureSurfacesInfoLegRejectionNotHealthStatus() async {
+        // Live finding (2026-10-12, 2.0.26 server): the health leg answers
+        // 200 HTML even for bad credentials, so the probe reports
+        // authFailure(200, 401). The user-facing error must name the 401
+        // ("Basic Auth rejected"), not the meaningless health 200.
+        let mock = MockAPIClient()
+        await mock.setGenerationDetectionOverride(.authFailure(healthStatus: 200, infoStatus: 401))
+        let state = makeIsolatedAppState(apiClient: mock)
+        state.configure(serverURL: "127.0.0.1:4096")
+        await state.testConnection()
+
+        #expect(!state.isConnected)
+        #expect(state.connectionError?.contains("Basic Auth") == true)
+        #expect(state.connectionError?.contains("200") == false)
+    }
+
     @Test @MainActor func hostSwitchResetsGeneration() async {
         let mock = MockAPIClient()
         await mock.setGenerationDetectionOverride(.v2(version: "2.0.26"))
