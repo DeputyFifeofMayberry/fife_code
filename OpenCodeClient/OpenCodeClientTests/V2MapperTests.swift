@@ -169,6 +169,7 @@ struct V2MapperTests {
         // so every transcript consumer sees old→new.
         let json = """
         {"data":[
+        {"id":"msg_00d","type":"assistant","content":[{"type":"text","text":"reply"}],"time":{"created":4000}},
         {"id":"msg_00c","type":"user","text":"newest","time":{"created":3000}},
         {"id":"msg_00b","type":"user","text":"middle","time":{"created":2000}},
         {"id":"msg_00a2","type":"user","text":"tie-later","time":{"created":1000}},
@@ -176,7 +177,10 @@ struct V2MapperTests {
         ]}
         """
         let messages = try V2Mapper.messages(sessionID: "ses_1", data: Data(json.utf8))
-        #expect(messages.map(\.info.id) == ["msg_00a1", "msg_00a2", "msg_00b", "msg_00c"])
+        #expect(messages.map(\.info.id) == ["msg_00a1", "msg_00a2", "msg_00b", "msg_00c", "msg_00d"])
+        // The assistant step must link to its own user turn, not to whatever
+        // row happened to precede it on the newest-first wire.
+        #expect(messages.last?.info.parentID == "msg_00c")
     }
 
     // MARK: - Prompt encodes

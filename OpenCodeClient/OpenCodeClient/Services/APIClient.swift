@@ -342,7 +342,7 @@ actor APIClient {
 
     nonisolated static func decodeMessageTranscript(_ data: Data) throws -> MessageTranscriptDecode {
         if let direct = try? JSONDecoder().decode([MessageWithParts].self, from: data) {
-            return MessageTranscriptDecode(messages: direct, diagnostics: [])
+            return MessageTranscriptDecode(messages: MessageWithParts.conversationOrdered(direct), diagnostics: [])
         }
 
         let object: Any
@@ -392,7 +392,7 @@ actor APIClient {
             logMessageDecodeDiagnostics(diagnostics)
             throw MessageTranscriptError.noneDecoded(diagnostics: diagnostics)
         }
-        return MessageTranscriptDecode(messages: messages, diagnostics: diagnostics)
+        return MessageTranscriptDecode(messages: MessageWithParts.conversationOrdered(messages), diagnostics: diagnostics)
     }
 
     private nonisolated static func decodeMessageRecord(

@@ -451,6 +451,19 @@ nonisolated struct MessageWithParts: Codable {
     var toolRunSeconds: Double {
         parts.compactMap(\.toolRunSeconds).reduce(0, +)
     }
+
+    /// Conversation order (old→new): `time.created` ascending, ties broken by
+    /// message id, which is time-ordered (see `OrderedServerID`). Server
+    /// transcripts arrive newest-first; every transcript consumer (dedupe,
+    /// pagination merge, scrollAnchor, revert filter) assumes ascending.
+    nonisolated static func conversationOrdered(_ messages: [MessageWithParts]) -> [MessageWithParts] {
+        messages.sorted { lhs, rhs in
+            if lhs.info.time.created != rhs.info.time.created {
+                return lhs.info.time.created < rhs.info.time.created
+            }
+            return lhs.info.id < rhs.info.id
+        }
+    }
 }
 
 extension Message {

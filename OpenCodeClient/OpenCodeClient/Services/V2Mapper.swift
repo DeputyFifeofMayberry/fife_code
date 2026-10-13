@@ -173,10 +173,28 @@ nonisolated enum V2Mapper {
     /// errors; a malformed envelope throws.
     static func messages(sessionID: String, data: Data) throws -> [MessageWithParts] {
         let rows = try dataArray(data)
+        // Server transcripts arrive newest-first. Walk rows in conversation
+        // order (time.created asc, id tiebreak) so `lastUserID` links each
+        // assistant step to its own user turn; rows without id/created are
+        // dropped by the loop guards either way.
+        let orderedRows = rows
+            .compactMap { row -> (created: Int, id: String, row: Any)? in
+                guard let item = row as? [String: Any],
+                      let id = item["id"] as? String, !id.isEmpty,
+                      let created = intValue((item["time"] as? [String: Any])?["created"]) else {
+                    return nil
+                }
+                return (created, id, row)
+            }
+            .sorted { lhs, rhs in
+                if lhs.created != rhs.created { return lhs.created < rhs.created }
+                return lhs.id < rhs.id
+            }
+            .map { $0.row }
         var results: [MessageWithParts] = []
         var lastUserID: String?
 
-        for row in rows {
+        for row in orderedRows {
             guard let item = row as? [String: Any],
                   let id = item["id"] as? String, !id.isEmpty else { continue }
             let time = item["time"] as? [String: Any]
