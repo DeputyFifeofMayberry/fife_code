@@ -1,13 +1,21 @@
-# OpenCode iOS Client — Working Document
+# OpenCode iOS Client ΓÇö Working Document
 
 > A running record of progress, problems, and decisions made during implementation
 
 ## Current Status
 
-### 2026-10-12 — OpenCode server v2 compatibility (opencodev2-integration branch)
+### 2026-10-13 — Sessions rendered newest-first (latest at top, sent message jumps to top)
+
+- **Symptom**: Every session rendered messages newest-first: the latest assistant reply sat at the top of the screen, the user's own message at the bottom, tool activity in between. After sending a new message the reload moved it to the very top of the list, so you had to scroll all the way up to see what you just sent.
+- **Root cause**: The server returns `GET /session/:id/message` newest-first. Evidence: the upstream official client calls `toReversed()` and then `sort(compareMessages)` on the response (`packages/app/src/context/server-session.ts`, key `time.created + id`), and sorts the legacy v1 path too. This client used the wire order verbatim across the whole pipeline (fetch → dedupe → store → `ForEach`) without ever sorting, so the newest row landed at index 0. Two connected symptoms: `.defaultScrollAnchor(.bottom)` and `scrollTo("bottom")` actually parked at the oldest end, and the v2 mapping loop walked rows in wire order so `lastUserID` linked each assistant step to the wrong user turn (or nil), breaking `AppState+ClientCapabilities`' `parentID`-based continuation matching.
+- **Fix**: Normalize to ascending at the wire-decoding boundary (`time.created` ascending, id tiebreak; ids are time-ordered, see `OrderedServerID`), matching upstream's `messageKey` semantics. Added `MessageWithParts.conversationOrdered(_:)`: v1 `decodeMessageTranscript` sorts at its two construction points; v2 `V2Mapper.messages` sorts raw rows before the mapping loop, which also fixes `lastUserID` linking. Downstream (order-preserving dedupe, pagination merge, `scrollAnchor`'s last=newest assumption, the revert filter's `id <` comparison) was already written ascending, so zero changes needed there.
+- **Tests**: TDD. RED `9dfe6de`: `WireDecodingTests.newestFirstTranscriptDecodesAscendingWithIDTiebreak`, `V2MapperTests.newestFirstPayloadMapsAscendingWithIDTiebreak` (including the assistant `parentID` assertion). GREEN `b3c4603`: CI `tests.yml` run 38484956844 fully green, 807 tests / 92 suites. (An earlier CI run on the RED commit, 38482248085, died in the preflight "simulator unresponsive" — the CI simulator first-boot race; tests never ran.)
+- **Follow-ups**: branch merged to dev; on-device reading order still to verify in TestFlight.
+
+### 2026-10-12 ΓÇö OpenCode server v2 compatibility (opencodev2-integration branch)
 
 - **Background**: The user's server was already v2.0.26 while the client only spoke v1. Implemented the dual v1/v2 protocol per `docs/v2_server_compatibility.md` (the single source of truth for the wire contract).
-- **Changes**: (1) Detection: `HostProfile.apiGeneration` (missing = auto, cleared on URL change); at connect time `/global/health` → `/api/info` probing (`ServerGeneration.swift`) with the result written back to the profile. (2) REST: each APIClient method branches on generation (`APIClient+V2.swift`) with exact status codes; archive writes return 404 directly, todos come back empty with no request, and the form reply table lives in APIClient. (3) Pure mapping: `V2Mapper.swift` implements the full spec table and produces the existing models. (4) SSE: v2 frames `{id,type,data}` are normalized and then translated into the existing handlers per the spec's SSE table (the data path is shared with v1); `session.created/renamed/metadata.updated` go through GET+upsert.
+- **Changes**: (1) Detection: `HostProfile.apiGeneration` (missing = auto, cleared on URL change); at connect time `/global/health` ΓåÆ `/api/info` probing (`ServerGeneration.swift`) with the result written back to the profile. (2) REST: each APIClient method branches on generation (`APIClient+V2.swift`) with exact status codes; archive writes return 404 directly, todos come back empty with no request, and the form reply table lives in APIClient. (3) Pure mapping: `V2Mapper.swift` implements the full spec table and produces the existing models. (4) SSE: v2 frames `{id,type,data}` are normalized and then translated into the existing handlers per the spec's SSE table (the data path is shared with v1); `session.created/renamed/metadata.updated` go through GET+upsert.
 - **Two approved deviations**: v2 `type:"synthetic"` messages are mapped (visible as receipt cards); `isConnected` is set as soon as probing succeeds (omitting the spec's session-list gate).
 - **Tests**: four new files, `ServerGenerationTests` / `V2MapperTests` / `V2APIWireTests` / `V2SSETests` (probe with a saved body, one test per spec Unit-tests row, wire status-code assertions, SSE translation and convergence). CI run still pending (no local Xcode on Windows).
 - **Open items**: the real synthetic body is untested (the fixture mirrors the user-row shape; fall back to dark if it does not match); the `v2_contract_check.py` live run and TestFlight verification remain to be done.
@@ -17,72 +25,72 @@
 - **Build/tests**: `OpenCodeClientTests` all green (569 tests, including 6 new subagent aggregation tests). UI: `SessionScrollAnchorUITests` 2/2 and `ToolCardsUITests` 1/1 pass (iPhone 16 Pro `3EB51FEF-C951-4485-AD0F-33463C66DBEB`, iOS 18.4).
 - **Phase**: background subagent activity is visible on the parent row and in the chat page
 
-### 2026-10-08 — Background subagent keeps running while the main session is idle, UI shows nothing
+### 2026-10-08 ΓÇö Background subagent keeps running while the main session is idle, UI shows nothing
 
 - **Symptom**: After handing a task to a background subagent, the parent session finishes its turn and its status becomes `idle`, while the subagent stays `busy` inside its own child session. The session list parent row shows Idle and the chat page shows no sign of ongoing work, so it looks like nothing is running.
 - **Root cause**: Status is stored per session (runner) (`session/status.ts`: removed from the map on `idle`), so the parent goes idle as soon as its own runner ends; the subagent has its own runner. Both clients store `sessionStatuses` as a global map, so the child's busy data is available, but presentation only reaches the single-session level: the list parent row reads only `statuses[parent.id]`, child rows are collapsed by default and sit inside folded nesting, and the chat page's `isBusy` looks only at the current session.
 - **Fix**: The client derives "conversation-tree aggregated activity" with zero server changes. `descendantBusyCountsBySession` counts busy descendants upward along `parentID` (excluding self), modeled directly on the existing attention aggregation slot. The list parent row shows a distinct secondary signal when it is not busy itself and has no attention (branch icon + neutral color + "N subagents running", distinguished from the brand blue used for its own Running), and such trees rise to the top of the list (discoverable even while collapsed). The chat page adds a separate "subagent running" segment to the status bar when it is idle and has busy descendants: the child session title when there is one, a count when there are several; tapping reuses `openReferencedSession` to jump to that child session. It does not occupy the turn stopwatch or interrupt (those belong to the child session's own clock). Copy was drafted via AGY (gemini-3.8-flash-high).
 - **Tests**: six new tests in `SessionTreeTests`: `descendantBusyCountsRollUpAndExcludeSelf` / `...HandleRetryAndIgnoreIdle` / `...IgnoreBusySelfWhenNoChildren` / `descendantBusySessionsSortAheadOfNewerSessions` / `sessionDescendantBusyCountsReadGlobalStatusMap` / `runningDescendantSessions...`. The Android side has the matching 6 in `SessionTreeTest` (`./gradlew testDebugUnitTest` green).
 
-### 2026-09-29 — Switching session away and back leaves the chat area stuck mid-conversation
+### 2026-09-29 ΓÇö Switching session away and back leaves the chat area stuck mid-conversation
 
 - **Symptom**: After switching to another session and back, the chat area does not scroll to the bottom of the conversation. It stops at some message in the middle, and you have to scroll down manually for a long while to reach the latest message.
 - **Root cause**: The chat `ScrollView` is a single SwiftUI identity reused across sessions. When `selectSession` replaces `messages`, the underlying UIScrollView keeps the old session's `contentOffset` as the starting position for the new content (when the old session's content is long, the landing point sits right in the middle of the conversation). The only path back to the bottom was the reactive chain of "`scrollAnchor` change + `isNearBottom` gate + 50ms-delayed `scrollTo`": on switching, `onChange(currentSessionID)` only optimistically sets `isNearBottom` to true and hopes the next `scrollAnchor` change carries the scroll. If the `scrollTo` after the async load lands does not actually reach the bottom (lots of content laid out in the same transaction, offset clamped to the size known at that moment), the 75ms bottom marker measurement immediately flips `isNearBottom` to false, after which all auto-scrolling is blocked by the `guard` with no retry, and the view stays pinned at the old offset.
 - **Fix**: Give each session's scroll view a fresh identity: append `.defaultScrollAnchor(.bottom)` + `.id(state.currentSessionID)` at the end of the `ScrollView` chain. Switching sessions rebuilds the whole scroll view, and the initial position is pinned to the bottom by the default anchor (iOS 17+, deployment target 17.0). The existing reactive follow mechanism (`isNearBottom` + `scrollAnchor`) is kept and continues to handle "follow while the user is at the bottom" during streaming updates. A positive side effect: the identity change triggers `onDisappear`, which cancels leftover pending scroll / visibility tasks on switch, eliminating cross-session scroll task races.
-- **Side effects**: (1) Content shorter than the screen is bottom-aligned; short sessions (1–2 messages) change from top-aligned to bottom-aligned (standard chat behavior), while empty states (no session / no messages / busy placeholder) use a viewport-height frame (`emptySessionStateView(viewportHeight:)`) to keep the original top-aligned look. (2) Row-level `@State` (thinking cards / tool calls expanded state) resets to collapsed after switching away and back.
+- **Side effects**: (1) Content shorter than the screen is bottom-aligned; short sessions (1ΓÇô2 messages) change from top-aligned to bottom-aligned (standard chat behavior), while empty states (no session / no messages / busy placeholder) use a viewport-height frame (`emptySessionStateView(viewportHeight:)`) to keep the original top-aligned look. (2) Row-level `@State` (thinking cards / tool calls expanded state) resets to collapsed after switching away and back.
 - **Tests**: Added an offline fixture `UITEST_SESSION_SCROLL_FIXTURE` (`SessionScrollFixture.swift`: a 40-turn long session plus a short session, with an `APIClientProtocol` stub providing the full `selectSession` data chain, no network). `SessionScrollAnchorUITests` has 2 tests: the long session renders its first screen at the bottom (frame assertions that the last user message is on screen and the first is off screen), and after switching to the short session and back to the long session it lands at the bottom (the regression case for this symptom). The existing `ToolCardsUITests` (which rely on auto-scroll-to-bottom at launch) still pass.
 
-### 2026-09-27 — Background subagent receipts render as TaskNotificationCard
+### 2026-09-27 ΓÇö Background subagent receipts render as TaskNotificationCard
 
 - **Symptom**: The server injects background task completion results as a synthetic user message whose body is `<task>` XML. The client did not decode `synthetic`, so the receipt was drawn as raw XML inside a blue user bubble.
-- **Fix**: `Part.synthetic` is decoded with `decodeIfPresent`. `TaskNotificationParser` uses a range to locate the outermost envelope so nested angle brackets are not mis-split. A synthetic text that parses successfully renders as a card: status icon + localized status + task title with the English prefix stripped; the result goes through the existing markdown path and is expanded by default at ≤500 characters. When expanded, the subagent session can be opened by reusing `selectSession`, switching project directory when it differs; a missing session goes through `sendError`. Copying the receipt copies the result body. These messages do not show Edit-from-here.
+- **Fix**: `Part.synthetic` is decoded with `decodeIfPresent`. `TaskNotificationParser` uses a range to locate the outermost envelope so nested angle brackets are not mis-split. A synthetic text that parses successfully renders as a card: status icon + localized status + task title with the English prefix stripped; the result goes through the existing markdown path and is expanded by default at Γëñ500 characters. When expanded, the subagent session can be opened by reusing `selectSession`, switching project directory when it differs; a missing session goes through `sendError`. Copying the receipt copies the result body. These messages do not show Edit-from-here.
 - **Tests**: 16 tests in `TaskNotificationParserTests` / `TaskNotificationRenderingTests`; `UITEST_TASK_NOTIFICATION_FIXTURE` covers expansion and navigation. For long results the jump button is off the first screen, so the UI test swipes up after expanding before tapping.
 
-### 2026-09-26 — Grok does not show the quota pill
+### 2026-09-26 ΓÇö Grok does not show the quota pill
 
 - **Symptom**: With `xai/grok-*` selected the toolbar has no quota pill, while GPT / GLM / Ollama do.
-- **Root cause**: The pill shows only when `primaryQuotaKey != nil`. The mapping covered only `openai` → `codex/5h`, `zai-coding-plan` → `glm/5h`, and `ollama-cloud` → `ollama/5h`. `xai` fell through to the default case, returned nil, and the whole button was not rendered. In the Dashboard `/api/v1/quotas`, this window is `provider=grok` with `label=Weekly`.
+- **Root cause**: The pill shows only when `primaryQuotaKey != nil`. The mapping covered only `openai` ΓåÆ `codex/5h`, `zai-coding-plan` ΓåÆ `glm/5h`, and `ollama-cloud` ΓåÆ `ollama/5h`. `xai` fell through to the default case, returned nil, and the whole button was not rendered. In the Dashboard `/api/v1/quotas`, this window is `provider=grok` with `label=Weekly`.
 - **Fix**: `xai` maps to `grok` / `Weekly`. When the preferred window is missing from the snapshot, fall back to a window the provider actually has. Data is fetched on entering Chat instead of waiting for a tap. With a number available it shows the percentage; with no number yet it shows only the window name and does not draw `--`. A successful fetch within the last hour is brand blue; older than an hour or a failed refresh is gray. The detail page's provider name gains Grok. The 60-second dedup for non-forced refreshes is unchanged.
 
-### 2026-09-21 — Model shortlist left-handle reorder does not take effect on release
+### 2026-09-21 ΓÇö Model shortlist left-handle reorder does not take effect on release
 
-- **Symptom**: In Settings → Models, the `line.3.horizontal` handle on the left of each row can be picked up, but the order does not change after release.
+- **Symptom**: In Settings ΓåÆ Models, the `line.3.horizontal` handle on the left of each row can be picked up, but the order does not change after release.
 - **Root cause**: Reordering was attached to the `List` row's `.onDrop`. A drag session internal to the same list never reaches `ShortlistDropDelegate`, so `dropEntered` never runs and `moveShortlist` is never called. The provider type (`public.utf8-plain-text`) also mismatched `UTType.plainText`.
 - **Fix**: Removed `onDrag` / `onDrop`. The left handle now uses a UIKit pan: during the drag only the preview moves and data stays untouched; on release the target index is computed from displacement / row height and `moveShortlist` is called once. Swipe-to-delete is kept.
 - **Tests**: `ShortlistReorderMath` covers the half-row threshold, out-of-bounds clamping, and the destination contract with `moveShortlist`. On-device drag and drop awaits manual acceptance.
 
-### 2026-09-21 — Delete the dead hardcoded default model list `modelPresets` from production code
+### 2026-09-21 ΓÇö Delete the dead hardcoded default model list `modelPresets` from production code
 
 - **Background**: Since 2026-08-24 the chat picker reads the user-managed `modelShortlist` (persisted locally, `pickerModelPresets` = `modelShortlist.map(asPreset)`), and the settings catalog pulls live from the `/provider` registry (`catalogModelPresets`). The hardcoded default array `modelPresets` in `AppState.swift` had zero references left in production code and was used only by unit tests as a seed fixture.
 - **Fix**: Deleted the `modelPresets` array from `AppState.swift` (keeping the `selectedModelIndex` default and all live logic). The test seed moved into a shared fixture `testSeedPresets` in `TestDoubles.swift` (byte-identical to the original array), and `SessionFlowTests.makeState` plus `AIUsageQuotaTests` now call `addModelsToShortlist(testSeedPresets)`.
-- **Unit tests**: Deleted 3 obsolete cases testing "default preset list" behavior (`defaultSelectionUsesGemini37Flash` / `defaultPresetsIncludeDeepSeekLocal` / `defaultPresetsExcludeRemovedGPTVariants`); kept 3 aging cases (legacy GLM / GPT / Kimi mappings) with assertions changed from `state.modelPresets[...]` to `state.pickerModelPresets[...]` (bit-for-bit equivalent after seeding). Also fixed the stale test name `grok46ShortName` → `grok47ShortName` in `ModelsTests` (the case body was already 4.7).
+- **Unit tests**: Deleted 3 obsolete cases testing "default preset list" behavior (`defaultSelectionUsesGemini37Flash` / `defaultPresetsIncludeDeepSeekLocal` / `defaultPresetsExcludeRemovedGPTVariants`); kept 3 aging cases (legacy GLM / GPT / Kimi mappings) with assertions changed from `state.modelPresets[...]` to `state.pickerModelPresets[...]` (bit-for-bit equivalent after seeding). Also fixed the stale test name `grok46ShortName` ΓåÆ `grok47ShortName` in `ModelsTests` (the case body was already 4.7).
 - **Impact**: No runtime behavior change; pure dead code + test cleanup. `xcodebuild test` must run serially (shared DerivedData).
 
-### 2026-09-21 — Grok 4.7 model preset upgrade
+### 2026-09-21 ΓÇö Grok 4.7 model preset upgrade
 
-- xAI released Grok 4.7, handled per the 2026-08-14 4.5→4.6 upgrade precedent: the tail `Grok 4.6` / `xai/grok-4.6` preset is upgraded to `Grok 4.7` / `grok-4.7` (renamed in the `AppState.swift` model list and in `ModelPreset.suggestedShortName` in step, with no canonical legacy mapping added).
+- xAI released Grok 4.7, handled per the 2026-08-14 4.5ΓåÆ4.6 upgrade precedent: the tail `Grok 4.6` / `xai/grok-4.6` preset is upgraded to `Grok 4.7` / `grok-4.7` (renamed in the `AppState.swift` model list and in `ModelPreset.suggestedShortName` in step, with no canonical legacy mapping added).
 - Tests updated in step: `grok-4.6` / `Grok 4.6` in `ModelShortlistTests` / `ModelsTests` / `SessionFlowTests` all changed to 4.7, and targeted `xcodebuild test` passes for the three suites (iOS Simulator).
 - Preset order, count, and other model entries are untouched.
 
-### 2026-09-13 — Document archive placement: Markdown Web Preview sub-documents
+### 2026-09-13 ΓÇö Document archive placement: Markdown Web Preview sub-documents
 
-- **Problem**: `.gitignore` (lines 67–70), the archive index in `docs/README.md`, main PRD §4.3.5, and main RFC §7.5 all point to `docs/archive/2026-06_markdown_web_preview_prd.md` / `_rfc.md`, but the two sub-documents actually still sat at the old paths `docs/Markdown_Web_Preview_PRD.md` / `_RFC.md`. The old paths do not match the ignore rules, so the files were neither tracked nor ignored and hung around untracked at the `docs/` root. The 2026-08 pass only did "merge into the main PRD/RFC + write ignore rules + document the decision"; the file move was never executed, and `docs/archive/` in fact did not contain these two files.
+- **Problem**: `.gitignore` (lines 67ΓÇô70), the archive index in `docs/README.md`, main PRD ┬º4.3.5, and main RFC ┬º7.5 all point to `docs/archive/2026-06_markdown_web_preview_prd.md` / `_rfc.md`, but the two sub-documents actually still sat at the old paths `docs/Markdown_Web_Preview_PRD.md` / `_RFC.md`. The old paths do not match the ignore rules, so the files were neither tracked nor ignored and hung around untracked at the `docs/` root. The 2026-08 pass only did "merge into the main PRD/RFC + write ignore rules + document the decision"; the file move was never executed, and `docs/archive/` in fact did not contain these two files.
 - **Fix**: Moved the two files to the archive paths the docs specify with zero content changes (mtime still 2026-06-14). After placement `git status` is clean and all the references above point to files that actually exist.
-- **Implication**: Both files remain untracked + gitignored per the established policy and are **not distributed with the repo**. The canonical decision lives in main PRD §4.3.5 / main RFC §7.5, and the decision history is in this file's 2026-06-14 entry.
+- **Implication**: Both files remain untracked + gitignored per the established policy and are **not distributed with the repo**. The canonical decision lives in main PRD ┬º4.3.5 / main RFC ┬º7.5, and the decision history is in this file's 2026-06-14 entry.
 
-### 2026-09-12 — LLM throughput display (per-message footnote + Context sheet)
+### 2026-09-12 ΓÇö LLM throughput display (per-message footnote + Context sheet)
 
-- **Motivation**: Wanted to see the real generation rate while the LLM works ("y tokens per x seconds"). Confirmed by measurement on the live server (4096): every assistant message (= one LLM step) already carries `time.created` / `time.completed` / `tokens`. Computable purely client-side with zero server changes. ~~Adjacent steps were 1–3ms apart and per-step time tracked output token count rather than tool count, suggesting the window was clean LLM generation time (tool execution falls between steps and is not counted)~~ → **That judgment was falsified on 2026-09-13, see the correction section below**.
+- **Motivation**: Wanted to see the real generation rate while the LLM works ("y tokens per x seconds"). Confirmed by measurement on the live server (4096): every assistant message (= one LLM step) already carries `time.created` / `time.completed` / `tokens`. Computable purely client-side with zero server changes. ~~Adjacent steps were 1ΓÇô3ms apart and per-step time tracked output token count rather than tool count, suggesting the window was clean LLM generation time (tool execution falls between steps and is not counted)~~ ΓåÆ **That judgment was falsified on 2026-09-13, see the correction section below**.
 - **Definition**: The denominator is the step's wall-clock time (`completed - created`, including prefill + generation + **tool execution**); the numerator is `output + reasoning` (tokens the model actually emitted, excluding input/prefill and also cache read/write). No number is produced when `completed` is nil (still generating), the window is 0, or tokens are 0.
 - **Implementation**:
-  - `Message.generatedTokens` / `Message.throughput` / `Message.throughputLabel` (`Models/Message.swift`): core computation; label "rounded at ≥10, one decimal below 10".
+  - `Message.generatedTokens` / `Message.throughput` / `Message.throughputLabel` (`Models/Message.swift`): core computation; label "rounded at ΓëÑ10, one decimal below 10".
   - Footer on every assistant message (`MessageRowView`): appends ` | X t/s` after `provider/model`; while generating, only the model is shown (no completed timestamp).
   - New Throughput section at the top of the Context sheet (`ContextUsageView`): session-level average rate (total tokens / total LLM time), generated token count (output+reasoning), and total generation time.
   - 5 new L10n keys (en/zh).
 - **Tests**: 12 new unit tests, all passing: 10 in `MessageThroughputTests` (basic / with reasoning / nil while generating / nil for zero window / nil without tokens / nil when the tokens field is missing / nil for negative window / integer label / decimal label / nil label) + 2 in `ContextUsageThroughputTests` (session aggregation excludes in-progress / nil when there is no completed step); full unit test regression 427/427 (signed build).
 - **Review**: A GLM-5.3 subagent's first review was approve-with-nits with no correctness issues; two points were tightened per the review: the throughput number formatting was extracted into a single implementation, `Message.throughputText` (shared by footer and sheet to avoid drift), and the sheet's "Output tokens" label changed to "Generated tokens" (since the definition is output+reasoning, avoiding confusion with the Output row in the Tokens section).
 - **SSE extension: best-effort decoding (added 2026-09-12, narrowed to decoding-only on 2026-09-13)**:
-  - Background: a single general throughput mixes prefill and decode together (the denominator `created→completed` includes prefill). The goal was to split out a pure generation rate.
+  - Background: a single general throughput mixes prefill and decode together (the denominator `createdΓåÆcompleted` includes prefill). The goal was to split out a pure generation rate.
   - Data source: the server **does not persist first-token time** (`message-updater` writes only `created`/`completed`), so pure decode cannot be computed for historical messages; but the live SSE stream carries per-token `message.part.delta` (`field`/`messageID`, no server timestamps) and `message.part.updated` (part creation/finalization, with step-finish carrying `tokens.output`).
   - **Best-effort definition**: only "was SSE observed" matters. If observed, decoding is shown; if not (browsing history / restart / pure REST load), it is not, and the footer keeps only general.
   - **Clock**: everything uses client receive time (firstVisible = arrival of the first visible token, lastVisible = arrival of the last visible token) to avoid server/client clock skew (SSH remote scenario). decoding = `tokens.output` / (lastVisible - firstVisible); the numerator counts output only, prefill and reasoning both fall before the window and are excluded, and tool execution falls after the window and is excluded. The step-finish arrival time does **not** participate in the window (it arrives only after tools finish) and only supplies `tokens.output`; when only one visible token is observed (window width 0), no number is produced rather than inventing one.
@@ -90,16 +98,16 @@
   - **TTFT removed (2026-09-13)**: the original design put `TTFT: 3.2s` in the footer (firstVisible - stepStart). On a real run this line almost never appeared (the window between the client seeing assistant `message.updated` and the first token arriving is unreliable, and it does not affect the "real generation rate" users wanted), so it was deleted under the "keep nothing useless" rule: `StepTiming` dropped `stepStart` / `ttft` / `ttftLabel`, the footer dropped the segment, and the related unit tests were removed with it. `recordStepStart` stays, repurposed to "mark that this step was observed from the start", still a precondition for the decoding window.
   - Tests: three SessionFlow tests (SSE stream capture: reasoning deltas do not enter the visible window, tool-input deltas establish the window and step-finish does not move the window's right end, non-current sessions are ignored) + `StepTimingTests` (decode computation and label, nil boundaries for window ends / zero width / missing tokens).
   - **Known limits**: decoding is valid only within the current app session, for the step where the stream was observed; after a restart or for pure history it falls back to general only. Historical pure-decode reconstruction would require patching the server to add a first-token timestamp to assistant messages and persist it.
-- **Known limits**: ~~tool time is out of scope for now (the user explicitly is not interested); live SSE carries tool timestamps, but the persisted-history V1 message list does not store tool `time`, so tool time cannot be reconstructed for history~~ → **Corrected 2026-09-13: tool part `state.time` does exist in the persisted payload (the full local DB, 20k+ tool parts, all have start/end), and it must be subtracted from the denominator, see the correction section below**.
+- **Known limits**: ~~tool time is out of scope for now (the user explicitly is not interested); live SSE carries tool timestamps, but the persisted-history V1 message list does not store tool `time`, so tool time cannot be reconstructed for history~~ ΓåÆ **Corrected 2026-09-13: tool part `state.time` does exist in the persisted payload (the full local DB, 20k+ tool parts, all have start/end), and it must be subtracted from the denominator, see the correction section below**.
 - **Merged**: PR #165 (branch `feat/llm-throughput`).
 
 #### 2026-09-13 correction: tool execution time falls inside the step window and must be subtracted from the denominator
 
 - **Trigger**: a real run produced "the LLM emitted a very large write tool call, yet throughput was extremely low".
-- **Conclusion: the numerator is fine; tool call tokens were being counted all along.** `output` = provider output tokens − reasoning, and the JSON arguments the model generates for a tool call count as output tokens. Cross-checked against the local OpenCode DB (`~/.local/share/opencode/opencode.db`): of 910 tool parts, 901 have a step whose `tokens.output` matches the tool input volume (the other 9 are `shell`/synthetic paths where output is always 0); the largest write sample had 5426 characters of input corresponding to 2748 output tokens. So "tool tokens were not counted" was a misdiagnosis.
-- **Real cause**: the denominator `created → completed` **includes tool execution time**. Both server paths behave this way: the legacy processor executes tools inside the stream and writes `completed` only after tools finish; the V2 runner awaits `awaitToolFibers` before emitting `SessionEvent.Step.Ended`. Measured evidence: `msg_085d6384a001`'s bash tool ran 417,204ms with a step window of 419,309ms and 63 output tokens → displayed 0.1 t/s; `msg_dbd74d5d0001`'s write tool ran 48,345ms with a step window of 56,157ms and 529 tokens → displayed 9.4 t/s (67.7 t/s once tool time is removed).
+- **Conclusion: the numerator is fine; tool call tokens were being counted all along.** `output` = provider output tokens ΓêÆ reasoning, and the JSON arguments the model generates for a tool call count as output tokens. Cross-checked against the local OpenCode DB (`~/.local/share/opencode/opencode.db`): of 910 tool parts, 901 have a step whose `tokens.output` matches the tool input volume (the other 9 are `shell`/synthetic paths where output is always 0); the largest write sample had 5426 characters of input corresponding to 2748 output tokens. So "tool tokens were not counted" was a misdiagnosis.
+- **Real cause**: the denominator `created ΓåÆ completed` **includes tool execution time**. Both server paths behave this way: the legacy processor executes tools inside the stream and writes `completed` only after tools finish; the V2 runner awaits `awaitToolFibers` before emitting `SessionEvent.Step.Ended`. Measured evidence: `msg_085d6384a001`'s bash tool ran 417,204ms with a step window of 419,309ms and 63 output tokens ΓåÆ displayed 0.1 t/s; `msg_dbd74d5d0001`'s write tool ran 48,345ms with a step window of 56,157ms and 529 tokens ΓåÆ displayed 9.4 t/s (67.7 t/s once tool time is removed).
 - **Fix (client-side, still zero server changes)**:
-  - `PartStateBridge` parses `state.time.start/end`; `Part.toolRunSeconds` / `MessageWithParts.toolRunSeconds` aggregate it; `Message.throughputExcludingToolSeconds` = `generatedTokens / (stepSeconds - toolRunSeconds)` (falls back to the original window when tool time ≥ the window, so the denominator never goes negative).
+  - `PartStateBridge` parses `state.time.start/end`; `Part.toolRunSeconds` / `MessageWithParts.toolRunSeconds` aggregate it; `Message.throughputExcludingToolSeconds` = `generatedTokens / (stepSeconds - toolRunSeconds)` (falls back to the original window when tool time ΓëÑ the window, so the denominator never goes negative).
   - The general numbers in the footer and the Context sheet both switch to the tool-subtracted definition; the sheet's session average subtracts tool time per step as well.
   - The right endpoint of the SSE decoding window changed from "step-finish part arrival" to "arrival of the last visible delta" (step-finish arrives only after tools complete, so ending the window there would add tool time back into decode); tool-input deltas also count as visible tokens, so a step that emits only a tool call with no body still gets a decoding rate instead of only a general rate polluted by tool time.
   - `StepTiming.firstTextAt` renamed to `firstVisibleAt`, with `lastVisibleAt` added; the TTFT-related fields (`stepStart`/`ttft`/`ttftLabel`) were then deleted, see the section above.
@@ -107,17 +115,17 @@
 - **Tests**: `MessageThroughputTests` +3 (tool subtracted / fallback when tool time exceeds the window / nil while running), new `MessageToolTimingTests` with 3 cases (state.time aggregation, missing timing counts as 0, running with no end not counted), `ContextUsageThroughputTests` +1 (aggregation subtracts tool), `StepTimingTests` +2 (decode ends at lastVisibleAt, tool-only step has a window), `AppStateFlowTests` +1 plus a rewrite of 1 existing case (tool-input deltas establish the window, step-finish does not move the window's right end). **All 29 tests across the 5 focused suites pass** (Xcode 27 beta + iOS 27.0 simulator, `test-without-building`).
 - **Test environment pitfall**: `/Applications/Xcode.app` (26.6) was missing the iOS platform component, making every iOS simulator destination unusable; Xcode 27 beta could run, but `AIUsageQuotaTests.swift` was incompatible with the beta's default isolation (an actor cannot conform to a protocol inferred as global-actor-isolated), so the file was temporarily moved out for the test run and restored afterwards, with no content changes.
 
-### 2026-09-10 — iPhone file preview closes with an edge swipe from the left edge
+### 2026-09-10 ΓÇö iPhone file preview closes with an edge swipe from the left edge
 
 - In compact-width Chat, the docked `ChatInlineFilePreview` opened by tapping a file tool call can be closed with the standard iOS back gesture in addition to the toolbar `xmark`: start at the screen's physical left edge and drag right far enough.
-- The geometry is shared with the session list open gesture via `EdgeSwipeGeometry` (left edge 32pt, horizontal ≥ 72pt, vertical drift ≤ 56pt), with two entry points, `FilePreviewEdgeSwipeBehavior` / `SessionListEdgeSwipeBehavior`; the regular/iPad middle-column preview does not enable it.
+- The geometry is shared with the session list open gesture via `EdgeSwipeGeometry` (left edge 32pt, horizontal ΓëÑ 72pt, vertical drift Γëñ 56pt), with two entry points, `FilePreviewEdgeSwipeBehavior` / `SessionListEdgeSwipeBehavior`; the regular/iPad middle-column preview does not enable it.
 - The gesture strip overlays the preview content area (it does not cover the navigation bar xmark or the bottom composer); the strip itself uses `.ignoresSafeArea(.container, edges: .horizontal)`, intended so that in landscape the gesture also starts at the physical left edge on the notch side rather than at the content edge after safe-area insets. Confirmed on device in portrait; landscape is unverified, and if it fails there the fallback is to add a flexible leading frame before the ignoresSafeArea.
 - The Markdown Web Preview's `WKWebView` swallows hit-testing for a SwiftUI `Color.clear` overlay, so the left-edge `DragGesture` never receives began. The close strip became a UIKit `UIView` that claims the left 32pt, logging `FilePreviewSwipe` (appear / touchBegan / began / changed / ended+decision / xmark). The close direction is **a rightward swipe from the left edge**; a leftward swipe logs `swipedWrongDirection`.
 - On-device log: `touchBegan x=7` was already inside the 32pt strip, but the `UIPanGestureRecognizer`'s `.began` fired only after the finger had moved right to `startX=73`; using that point for the edge test yields `startTooFarFromEdge`. The fix uses the touch-down coordinate as the origin and computes displacement as the current point minus the touch-down point.
 - Cost: the leftmost ~32pt is reserved for the close gesture, so horizontal code scrolling / image panning starting inside that strip is unreachable. This is intentional.
 - Tests: `FilePreviewEdgeSwipeBehaviorTests` (valid right swipe, non-left-edge start, excessive vertical drift, too-short horizontal distance, wrong-direction left swipe decision).
 
-### 2026-09-07 — SSH keys fail-closed (issue #161)
+### 2026-09-07 ΓÇö SSH keys fail-closed (issue #161)
 
 - **Background**: issue #161 reported that the device Ed25519 key pair could be silently regenerated: a transient Keychain read failure for the private key (`errSecInteractionNotAllowed` while the device is locked) made `ensureKeyPair()` fail-open, burning the old identity and overwriting the public key cache, which invalidated the server-side authorized_keys; aggravating factors included `KeychainHelper` not setting `kSecAttrAccessible` (default WhenUnlocked), save/load ignoring OSStatus, and connect and view hot paths calling a function that can generate keys.
 - **Fix (read/create separation)**: added a read-only `getKeyPair()` that never generates: it first derives the public key from the private key to verify cache consistency (repairing the cache from the private key on mismatch), throws the new error `SSHError.keyUnavailable` when the Keychain is temporarily unreadable, and throws `.keyNotFound` when the private key truly does not exist. `ensureKeyPair()` was narrowed to bootstrap-only use: it generates only when the Keychain returns `errSecItemNotFound` (the entry is genuinely missing), throws `.keyUnavailable` on any other error, and never touches existing keys. `rotateKey()` keeps generation permission (explicitly user-triggered).
@@ -127,14 +135,14 @@
 - **Test isolation**: `SSHKeyManagerTests` is annotated `@Suite(.serialized)` (consistent with `HostProfileTests` in the same file) to avoid flakes from multiple tests concurrently mutating shared Keychain/UserDefaults state.
 - **Verification**: build passes (xcodebuild build with a pinned simulator destination); `SSHKeyManagerTests` targeted run 7/7 pass (2 existing + 5 new: getKeyPair does not mint, bootstrap is idempotent, derivation repairs a stale cache, KeychainHelper update-in-place/delete, hasKeyPair lifecycle); the full 451-test run had 443 pass / 4 fail / 4 skip, with all failures in UI fixture tests (CarMode/AIUsageQuota/SpeechStrategies/ToolCards) that fail identically on a clean baseline, i.e. pre-existing local environment flakes unrelated to this change. Note: running Keychain-related tests on this machine requires removing `CODE_SIGNING_ALLOWED=NO` (an unsigned host app lacks the Keychain entitlement and reports -34018).
 
-### 2026-08-24 — Local model shortlist (PR #149, related #99 / #144)
+### 2026-08-24 ΓÇö Local model shortlist (PR #149, related #99 / #144)
 
-- The official picker's visibility persists on desktop, and `/provider` plus `/config/providers` are complete catalogs. iOS keeps a shortlist locally: Settings → Models searches and adds from the connected chat-capable catalog, swipe left to delete, left handle to reorder, tap a row to change the toolbar short name.
+- The official picker's visibility persists on desktop, and `/provider` plus `/config/providers` are complete catalogs. iOS keeps a shortlist locally: Settings ΓåÆ Models searches and adds from the connected chat-capable catalog, swipe left to delete, left handle to reorder, tap a row to change the toolbar short name.
 - The chat bar's Model & Agent renders only this list, in the same order. Both an empty list and "edit in Settings" jump to Settings with Models highlighted.
 - Connected custom/local providers (such as `ollama`) appear in the catalog; releases no longer depend on hardcoded presets.
 - The Add Models page only handles bulk adds (Cancel / Add). Deletion stays as swipe-left on the shortlist.
 
-### 2026-08-24 — Deterministic messageID + inline send-failure banner (supersedes #89, closes #81)
+### 2026-08-24 ΓÇö Deterministic messageID + inline send-failure banner (supersedes #89, closes #81)
 
 - **Background**: issue #81 reported that OpenCode 1.15 `prompt_async` failed silently with `SQLITE_CONSTRAINT_NOTNULL` when `messageID` was missing. Upstream fixed that (`input.messageID ?? MessageID.ascending()`; 1.18.16 verified to accept the old payload), but two problems remained: optimistic message reconciliation across the two IDs relied on text/timestamp heuristics, and async failures (the turn dying after the 204) left the UI waiting forever with zero feedback.
 - **Cherry-picked PR #89 (guyq1997) and adapted**: `promptAsync` carries `messageID` + a `directory` query; `createSession` gains `directory`; `makeServerID(prefix:)` generates `msg_<uuid>`. Deviations from the original PR: dropped `partID`, since the client does not consume part ids and the `part_` prefix does not match the current server `PartID` schema (which requires `prt`).
@@ -143,16 +151,16 @@
 - **End-to-end verification**: measured against a temporary local origin/dev server: payloads with a deterministic messageID persist under the same id the client used; in the no-API-key scenario the server emits `session.error` (`ProviderAuthError`) and the wire shape matches decoding.
 - **Tests**: 8 new tests (ID dedup/retention, deterministic ID send, synchronous failure banner, session.error hit / other-session filter / no pending row / undecodable fallback); 3 heuristic-era tests rewritten to ID semantics; the rollback test now uses "keep the row + inline failure" semantics.
 
-### 2026-08-14 — GLM 5.3 + Gemini 3.7 Flash + Grok 4.6 model preset upgrade
+### 2026-08-14 ΓÇö GLM 5.3 + Gemini 3.7 Flash + Grok 4.6 model preset upgrade
 
 - At the top of the model list, the `zai-coding-plan` GLM was upgraded from `GLM-5.2` / `glm-5.2` to `GLM-5.3` / `glm-5.3`. `models.dev` already lists `glm-5.3` for `zai-coding-plan`, so no server-side injection was needed.
 - The `ollama-cloud` row `Ollama GLM 5.2` stays unchanged because the `ollama-cloud` upstream does not offer `glm-5.3` yet.
 - `canonicalModelPresetID` gained entries mapping both `zai-coding-plan/glm-5.2` and `zai-coding-plan/glm-5.3` to `zai-coding-plan/glm-5.3`, so sessions with GLM-5.2 selected migrate smoothly to the new preset instead of falling back to the default. The existing `glm-5.1` / `glm-5-turbo` legacy mappings now point at `glm-5.3` too.
-- The same PR also upgraded the default model `Gemini 3.6 Flash` / `google/gemini-3.6-flash` to `Gemini 3.7 Flash` / `gemini-3.7-flash` (listed on `models.dev`). Following the earlier 3.5 → 3.6 pattern, Gemini gets no canonical legacy mapping; saved `gemini-3.6-flash` values keep the current selection via default logic.
+- The same PR also upgraded the default model `Gemini 3.6 Flash` / `google/gemini-3.6-flash` to `Gemini 3.7 Flash` / `gemini-3.7-flash` (listed on `models.dev`). Following the earlier 3.5 ΓåÆ 3.6 pattern, Gemini gets no canonical legacy mapping; saved `gemini-3.6-flash` values keep the current selection via default logic.
 - The tail `Grok 4.5` / `xai/grok-4.5` preset was upgraded to `Grok 4.6` / `grok-4.6` (listed on `models.dev`). `ModelPreset.shortName`'s `Grok 4.5 -> Grok` changed to `Grok 4.6 -> Grok` in step, with no canonical legacy mapping.
 - Removed the `GPT-5.6 Sol Fast` preset (`openai/gpt-5.6-sol-fast`) to align with the Android client. `canonicalModelPresetID` maps `openai/gpt-5.6-sol-fast` to `openai/gpt-5.6-sol` so sessions with that model selected migrate smoothly; the `GPT-F` branch in `ModelPreset.shortName` was deleted. The `gpt-5.6-sol-fast` used by the Car Mode internal protocol (`CarModeProtocol.model`) is unrelated to the selector and stays unchanged.
 
-### 2026-07-31 — GPT Live Transcribe host integration
+### 2026-07-31 ΓÇö GPT Live Transcribe host integration
 
 - New installations default to GPT Live Transcribe without overwriting a valid saved strategy. Chat now renders the Kit's accumulated GPT Live snapshots directly in the composer during recording; GPT Realtime remains finalize-only. The Kit dependency now uses exact release `0.4.0`.
 - Settings now persists and displays the third `gptLiveTranscribe` strategy in a menu. Both GPT strategies use realtime transport and expose the custom prompt; existing valid saved values remain unchanged.
@@ -162,18 +170,18 @@
 - Car retry state now distinguishes transcription retry from OpenCode request retry, so a transcription failure cannot resend the previous `carLastTranscript`.
 - Validation: strict Swift 6 standalone runtime checks pass for source/destination draft routing, session-switch detach versus cancellation preservation, and ordered sender order/capacity/drain. Deterministic app tests cover switch-at-finalize completion and destination-draft isolation. The Xcode package reference now pins exact VoiceFlowKit `0.4.0`.
 
-### 2026-07-31 — Markdown Web Preview native MathML
+### 2026-07-31 ΓÇö Markdown Web Preview native MathML
 
 - Web Preview now bundles Temml 0.13.4 and converts `$...$` / `$$...$$` TeX to MathML inside markdown-it before DOMPurify. Parsing preserves escaped dollars, code spans/fences, and ordinary currency.
 - DOMPurify no longer combines `ALLOWED_TAGS` with an overriding broad `USE_PROFILES`; the shell now uses one explicit HTML/SVG/MathML allowlist and sanitizes generated MathML in the same pass as the document.
 - Headless verification covers inline/display math, `\\xrightarrow`, fractions, invalid TeX fallback, delimiter edge cases, and removal of undeclared profile-only tags. iOS fixtures add light/dark screenshot coverage for the arrow-heavy formula shape.
 
-### 2026-07-30 — Pin VoiceFlowKit 0.3.0
+### 2026-07-30 ΓÇö Pin VoiceFlowKit 0.3.0
 
 - The SPM dependency changed from a bare revision to exact SemVer `0.3.0` (`Package.resolved` corresponds to merge commit `71b9fe6`).
 - iPhone 16 simulator build passes; `SpeechRecognitionDefaultsTests` / `VoiceFlowKitIntegrationTests` / chat speech tests pass.
 
-### 2026-07-29 — OpenAI Realtime / Grok Batch dual recording strategies
+### 2026-07-29 ΓÇö OpenAI Realtime / Grok Batch dual recording strategies
 
 - The VoiceFlowKit pin started at `4a04d562965fe041b552570759ef6e419ab3b2d6` and later moved to exact `0.3.0`. Settings persists `OpenAI Realtime` / `Grok Batch`; Grok mode hides the OpenAI-only prompt but keeps its value.
 - Chat and Car snapshot the strategy at Start. OpenAI maintains a realtime session, PCM stream, heartbeat, and recovery; Grok only starts local AAC-LC M4A recording, creating no ticket, WebSocket, or heartbeat while recording, with a single upload after Stop.
@@ -181,7 +189,7 @@
 - VoiceFlowKit was fixed in step for the AAC/WAV finalize-error writer, buffer, temp file, and audio session cleanup; 12 package tests pass.
 - Verification: iPhone 16 / iOS 18.4 build passes; 6 targeted tests pass across the new strategy persistence/transport contract and VoiceFlowKit integration; Tool Cards UI passes on isolated rerun. Voice-related tests in the full suite pass, but it still reports the pre-existing `LayoutConstantsTests.splitViewFractions` exact `CGFloat` comparison failure; the Tool Cards fixture failed its first run in the same round and passed on isolated rerun.
 
-### 2026-07-24 — Chat text selection across Markdown blocks
+### 2026-07-24 ΓÇö Chat text selection across Markdown blocks
 
 - The root cause was pinned to MarkdownUI's `BlockSequence`: one Markdown message splits into multiple SwiftUI block views, and iOS `.textSelection(.enabled)` only works within a single selectable view, so selection cannot extend across paragraphs, lists, and code blocks. Chat does not use WKWebView, and this was not a streaming DOM diff problem either.
 - The existing MarkdownUI reading render is kept to avoid regressing workspace images, tables, code blocks, and links; user/assistant message menus gain "Select text" and "Copy entire message".
@@ -190,7 +198,7 @@
 - Added a multi-text-part concatenation test ensuring multiple text parts of one message join with blank lines and are no longer affected by Markdown block boundaries.
 - Verification: iPhone 16 / iOS 18.4 build passes; 7 targeted `MessageRenderingHeuristicTests` tests pass.
 
-### 2026-07-19 — Health Quantification client capability
+### 2026-07-19 ΓÇö Health Quantification client capability
 
 - Car Mode actions became a tolerant typed union, keeping Maps and adding `health_quantification.export_all`; unknown future actions no longer fail the whole structured speech decode.
 - First use shows a local authorization sheet with allow-once, always-allow, and cancel; Settings can revoke the Health export authorization.
@@ -200,22 +208,22 @@
 - Verification covers the strict parser, the canonical handoff URL, store lifecycle, allow-once, original-session continuation, callback stop semantics, and the permission fixture UI. Sequential build and full test pass on the pinned iPhone simulator `302F88CA-C2D3-4DC0-8E12-B3ED82D5A3C8`; 352 Swift Testing tests and 37 UI tests pass, with 4 opt-in UI tests skipped as expected.
 - After on-device E2E acceptance, two UX points were tightened: the authorization page's three short buttons became equal-width in a row, wrapping English to at most two lines inside a button; a callback continuation enters Car Mode's existing `waitingReply` with a red "stop responding" primary button, and cancelling both aborts the session and deletes the matching Outbox, avoiding a background-committed request that looks like nothing happened in the foreground.
 
-### 2026-07-15 — Session deep link and Agent search links
+### 2026-07-15 ΓÇö Session deep link and Agent search links
 
 - Registered `opencode://session/<session_id>` with a strict URI parser that rejects unknown hosts, query, fragment, userinfo, port, invalid IDs, and multi-segment paths.
 - Cold/warm URLs share the AppState router with Chat Markdown taps; after the connection recovers the URL is verified against the current Host via `GET /session/:id`, switching project/session on success and keeping the original context on failure.
 - Backgrounding and Host switches invalidate old resolve generations, preventing lost links before an SSH reconnect or a stale Host response polluting the new Host.
 - Session list refreshes keep the currently verified session so a historical target outside the 100-entry window is not overwritten; the Files tree reloads using the target project directory.
 - Added parser/state tests, a Markdown tap fixture, and a cold pending fixture; also pinned the portrait precondition of UI suites to remove cross-test pollution from orientations left behind by launch tests.
-- Product behavior and the technical contract were merged into main PRD §4.2.7 and RFC §4.4 respectively. The workspace private semantic-search overlay now specifies the candidate evidence and `[Open in OpenCode](opencode://session/<id>)` output contract.
+- Product behavior and the technical contract were merged into main PRD ┬º4.2.7 and RFC ┬º4.4 respectively. The workspace private semantic-search overlay now specifies the candidate evidence and `[Open in OpenCode](opencode://session/<id>)` output contract.
 
-### 2026-07-15 — Car session active restore and doc consolidation
+### 2026-07-15 ΓÇö Car session active restore and doc consolidation
 
 - Before sending each Car turn the client checks the persisted session; if `time.archived > 0`, it writes the legacy restore sentinel `-1` and keeps using the original session. This behavior does not fork, does not copy history, and requires no archive-list server patch.
 - iOS distinguishes Active / Archived by `archived > 0`, so a restored session reappears in the iOS Active list. The OpenCode Web difference (it only accepts `archived === undefined`) is not covered by this feature's guarantee.
 - Car Mode product requirements merged into `OpenCode_iOS_Client_PRD.md`, with the technical contract and verification evidence merged into `OpenCode_iOS_Client_RFC.md`; the standalone `car_mode_design.md` was deleted to keep three documents from drifting apart.
 
-### 2026-07-14 — Car Mode implementation and server history fix
+### 2026-07-14 ΓÇö Car Mode implementation and server history fix
 
 - Settings gained an Experimental Features section holding the AI Usage Dashboard configuration and the Car Mode toggle. Car Mode defaults to off; when on, the iPhone tab order is Chat / Files / Car / Settings, and the Car tab is hidden when off. iPad (including compact windows) and Apple Vision Pro show neither Car Mode nor the toggle.
 - Car sessions are isolated by host UUID + workspace and do not reuse normal Chat's `currentSessionID`; persisted state covers session ID, the last processed assistant message ID, and pending confirmation.
@@ -228,7 +236,7 @@
 - Verification: pinned iPhone simulator `302F88CA-C2D3-4DC0-8E12-B3ED82D5A3C8` with `-parallel-testing-enabled NO`; 327 unit tests, three iPhone Car UI tests, one iPad absence test, and the visionOS simulator build all pass. The iPad test also confirms both the Car page and the Settings toggle are absent.
 - On device, TTS was confirmed audible and live structured Car history is readable. The Smart Home, email, iMessage, and route-duration skills remain unproductized without real E2E.
 
-### 2026-07-13 — Car Mode feasibility and design
+### 2026-07-13 ΓÇö Car Mode feasibility and design
 
 - Completed the Car Mode feasibility design, converging the driving voice entry into a standalone mode inside OpenCode iOS; conclusions are now folded into the main PRD/RFC.
 - Verified against the live OpenCode API: `system + format(json_schema)` can return `assistant.structured`; a second turn in the same session can reuse the previous turn's destination; a structured final can still be returned after tool execution.
@@ -236,7 +244,7 @@
 - The live `skill` tool does not currently have the workspace's Smart Home, email, iMessage, and maps skills registered; productization needs a formally registered Car allowlist or typed tools, since generic `read + bash` cannot serve as a stable permission boundary.
 - Product boundary: no promise of continued background interaction after switching to Maps or another app, but the host/workspace-isolated Car session ID is kept, and returning appends to the same session.
 
-### 2026-06-18 — Image attachments Phase 1/2
+### 2026-06-18 ΓÇö Image attachments Phase 1/2
 
 - Scope converged per this round's decision to the first two phases: sending photo-library images + rendering historical image/file parts; no Files app integration, no PDF/text attachments, no server-side upload.
 - Protocol: `Part` gains `mime` / `filename` / `url` / `source`; `APIClient.promptAsync` supports mixed text/file parts, with images using the web-isomorphic `data:image/jpeg;base64,...`.
@@ -246,20 +254,20 @@
 - Tests: added `filePartDecoding`, `appendOptimisticUserMessageIncludesImageAttachmentPart`, `sendMessagePassesImageAttachmentsToAPI`.
 - Verification: `xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4'` passes.
 
-### 2026-06-18 — Message revert / Edit from here MVP
+### 2026-06-18 ΓÇö Message revert / Edit from here MVP
 
 - The goal converged to a minimal viable version: only user-message `Edit from here`, no restore dock, no `unrevert` UI, no part-level revert.
 - Data protocol: `Session` gains `revert` decoding; `APIClient` adds `POST /session/:id/revert`, handling the `Session` the current server returns.
-- UI: the user message `⋯` menu gains `Edit from here`, disabled for a busy session to avoid revert failing while the server is busy.
+- UI: the user message `Γï»` menu gains `Edit from here`, disabled for a busy session to avoid revert failing while the server is busy.
 - State flow: tapping calls `AppState.editFromMessage`; on success the original user text parts are written back to the composer draft, the returned session is upserted, and messages / diff / file status refresh.
 - Rendering semantics: `ChatTabView` uses `AppState.visibleMessages`, hiding history rows with `message.id >= revert.messageID` when `currentSession.revert.messageID` exists, matching the Web rewind view.
 - Tests: added `sessionDecodingWithRevert`, `visibleMessagesHidesRowsAtAndAfterRevertMessageID`, `editFromMessageCallsRevertAndStoresDraft`, `editFromMessageKeepsDraftUnchangedOnFailure`.
 - Verification: `xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4'` passes.
 
-### 2026-06-14 — Markdown Web Preview device acceptance and closeout
+### 2026-06-14 ΓÇö Markdown Web Preview device acceptance and closeout
 
 - **Phase 0/1/2 fully complete and shipped** (see the earlier Markdown Web Preview section); `xcodebuild test` passes in full serial run (291 + 11 new = 302 passed, no regressions).
-- **The default preview mode became Web** (PRD §5.1 / RFC §8.2 updated in step).
+- **The default preview mode became Web** (PRD ┬º5.1 / RFC ┬º8.2 updated in step).
 - **Chip contrast problems exposed by device dark-mode acceptance**: `<style>` cards with hardcoded light backgrounds washed out in dark mode; the shell's dark semantic variables switched to saturated primary colors (`--ok-bg=#10b981` etc., like GitHub dark issue labels); chips use the compound selector `.vx-chip.ok` instead of bare `.ok` to avoid being overridden by the card's `color:var(--fg)`.
 - **Stale WebView content when switching files**: the root cause is that `.onAppear` fires only once when SwiftUI reuses the same `FileContentView` instance; the fix is `.onChange(of: filePath)` actively resetting content + reloading (`.id(filePath)` was tried but rebuilds the entire view, inelegant, and was reverted).
 - **New regression tests**: the `semantic_chips.md` fixture + `testSemanticChipsDarkVisible / Light` UI tests, whose sentinel text assertions guard the two real bugs "dark chips wash out" and "bare `.ok` gets overridden".
@@ -268,29 +276,29 @@
   - "Semantic classes must use compound selectors" (specificity pitfall caught by dogfooding)
   - "**The real metric is the rate of introducing new concepts, not the word count**" (the fundamental framing of low cognitive burden)
   - "Writing status cards like encyclopedia entries" is now listed as an anti-pattern, with the boundaries of cards/tables/`<details>` clarified
-- **Doc merge**: the final decision states of `Markdown_Web_Preview_PRD.md` / `Markdown_Web_Preview_RFC.md` merged into main PRD §4.3.5 / main RFC §7.5 (as visual tables + `<details>`, itself dogfooding). The two sub-documents stay on disk but were untracked with `git rm --cached` and added to `.gitignore`; the decision history is in this WORKING.md (for the archive placement date see the 2026-09-13 entry).
+- **Doc merge**: the final decision states of `Markdown_Web_Preview_PRD.md` / `Markdown_Web_Preview_RFC.md` merged into main PRD ┬º4.3.5 / main RFC ┬º7.5 (as visual tables + `<details>`, itself dogfooding). The two sub-documents stay on disk but were untracked with `git rm --cached` and added to `.gitignore`; the decision history is in this WORKING.md (for the archive placement date see the 2026-09-13 entry).
 
-### 2026-06-20 — Ollama Cloud GLM 5.2 model preset
+### 2026-06-20 ΓÇö Ollama Cloud GLM 5.2 model preset
 
 - In the model list, `Ollama Kimi K2.6` (`ollama-cloud/kimi-k2.6`) is replaced by `Ollama GLM 5.2` (`ollama-cloud/glm-5.2`). The OpenCode server's `ollama-cloud` provider registry had a `glm-5.2` entry injected via the `INJECTIONS` in `scripts/regen_models_local.py` (see `opencode-official/skills/update_models.md`); the model key is `glm-5.2`.
 - `ModelPreset.shortName` changed from `Ollama Kimi K2.6 -> Kimi` to `Ollama GLM 5.2 -> OGLM-5.2` (the O prefix plus version distinguishes it from the top `GLM-5.2` preset's shortName), keeping the narrow-screen model chip short.
 - `canonicalModelPresetID` gained `ollama-cloud/kimi-k2.6 -> ollama-cloud/glm-5.2` so sessions that had Kimi selected migrate smoothly to the new preset instead of falling back to the default.
 
-### 2026-06-10 — Ollama Cloud Kimi model preset
+### 2026-06-10 ΓÇö Ollama Cloud Kimi model preset
 
 - In the model list, `MiniMax M3` (`ollama-cloud/minimax-m3`) is replaced by `Ollama Kimi K2.6` (`ollama-cloud/kimi-k2.6`). The model key exposed by the OpenCode server's `ollama-cloud` provider registry is `kimi-k2.6`; passing the Ollama library tag `kimi-k2.6:cloud` directly makes `prompt_async` return 204 while no assistant message is generated in the background.
 - `ModelPreset.shortName` gained `Ollama Kimi K2.6 -> Kimi`, keeping the narrow-screen model chip short.
 
-### 2026-06-08 — F3 voice rail composer
+### 2026-06-08 ΓÇö F3 voice rail composer
 
 - The Chat composer converged from "a microphone attached inside the input field" to `voice rail + text review field`: the voice rail carries recording transport, the real waveform, transcription waiting, stop-wait, and preserved-audio retry; the text field carries transcript review, corrections, fallback typing, and a fixed send.
-- Agent running was demoted to a quiet status row near the composer, and `Interrupt agent` moved into the `⋯` menu, keeping low-frequency destructive actions out of the main voice-steer path.
+- Agent running was demoted to a quiet status row near the composer, and `Interrupt agent` moved into the `Γï»` menu, keeping low-frequency destructive actions out of the main voice-steer path.
 - While recording, the waveform uses the real mic level from `VoiceFlowMicrophone.audioLevel`; `VoiceFlowMicrophone` is rebuilt before each new recording so the audioLevel stream does not stop producing after the second recording.
 - Transcription waiting keeps an explicit exit, `Stop transcription wait`, which calls abort-preserving-audio; in the preserved-audio state the left icon button handles `Retry this segment` and the right lightweight action handles `Discard audio`, avoiding two retry entrances and giving the post-retry-failure state a clear exit.
 - When a partial transcript from speech transcription or a preserved-audio retry is written into the text review field, it auto-scrolls to the end so the user can keep seeing the latest transcription; ordinary manual input and draft restoration do not force scrolling.
 - Added `UITEST_F3_TRANSCRIBING_FIXTURE` / `UITEST_F3_RETRY_FIXTURE` with matching UI tests covering the two key states: transcribing + agent running, and preserved-audio retry.
 
-### 2026-06-08 — Chat history load-more diagnostics
+### 2026-06-08 ΓÇö Chat history load-more diagnostics
 
 - After comparing with Android, fixed iOS message part `files` decoding compatibility: old history can contain `files: ["path"]` or objects missing `additions/deletions`; Android already tolerated these, iOS previously required the full object, and after raising the message limit it could silently drop old records.
 - `loadMessages` / `loadOlderMessagesForCurrentSession` gained logging for limit, returned count, whether history grew, and fallback decoder dropped records, making it easier to reproduce "pull to load older finished but history did not grow".
@@ -298,7 +306,7 @@
 - A second log round confirmed session auto-pagination had stopped, but SSE `session.updated` still repeatedly replaced the same busy session at high frequency, along with the SwiftUI "Modifying state during view update" warning. `Session` / `SessionStatus` became `Equatable` to skip no-op upserts/status writes; `loadOlderMessagesForCurrentSession` moved the actual `loadMessages()` into an unstructured main-actor task so `.refreshable` cancellation no longer directly cancels the history message network request.
 - A third on-device log round verified: with `requestedLimit=40/60` the responses returned `returned=40/60` respectively, and history message count rose from 20 to 40/60. Added a regression test covering identical `session.updated` payloads not triggering session list changes.
 
-### 2026-05-30 — Speech abort/retry
+### 2026-05-30 ΓÇö Speech abort/retry
 
 - The VoiceFlowKit pin updated to merged revision `dbbe297ea52e3a3438d227a54001b23c138c47b7`.
 - The Chat composer gained an auxiliary button on the left: during recording/transcription it shows stop, calling `abortPreservingAudio()` to release the UI immediately; once audio is preserved it shows retry, calling `transcribe(preservedAudio:)` to re-transcribe the previous PCM segment.
@@ -362,15 +370,15 @@ None. Markdown Web Preview Phase 0/1/2 has been delivered; see "Completed" below
 ### Markdown Web Preview (started 2026-06-14, delivered)
 
 > Design in `docs/archive/2026-06_markdown_web_preview_prd.md` / `docs/archive/2026-06_markdown_web_preview_rfc.md`. This round delivered Phase 0/1/2.
-> Decisions: images go through data URIs reusing `MarkdownImageResolver`; Web is not the default mode; orchestration in RFC §12.5.
+> Decisions: images go through data URIs reusing `MarkdownImageResolver`; Web is not the default mode; orchestration in RFC ┬º12.5.
 > Build/test constraint: `xcodebuild build` and `xcodebuild test` must run serially (shared `build.db`).
 > Key files: `OpenCodeClient/OpenCodeClient/Views/FileContentView.swift` (mode switching), `Utils/MarkdownImageResolver.swift` (data URI reuse).
 
-**Parallel prep (sub-agent, merged after main-agent acceptance)** ✅
+**Parallel prep (sub-agent, merged after main-agent acceptance)** Γ£à
 - [x] Dependency research + frontend shell: markdown-it 14.2.0 + DOMPurify 3.4.10 (CDN-free; dist pulled via npm then copied out); all 5 shell checks pass in jsdom
-- [x] Fixture generation: the nine `.md` from §9.1 + `images/chart.png` (a real 6.8KB PNG) + `images/diagram.svg`; large_markdown at 70KB exceeds the 60KB threshold; the security fixture carries 4 payloads + sentinel
+- [x] Fixture generation: the nine `.md` from ┬º9.1 + `images/chart.png` (a real 6.8KB PNG) + `images/diagram.svg`; large_markdown at 70KB exceeds the 60KB threshold; the security fixture carries 4 payloads + sentinel
 
-**Phase 0 — Spike (serial, main agent)** ✅
+**Phase 0 ΓÇö Spike (serial, main agent)** Γ£à
 - [x] Added `MarkdownWebPreviewView.swift` (a `UIViewRepresentable` wrapping `WKWebView`)
 - [x] Bundled `preview.html/css/js` + markdown-it + purify; **pitfall: synchronized folders flatten subdirectories**, so vendor sits next to the html and src drops the `vendor/` prefix; `loadFileURL(allowingReadAccessTo: bundleDir)`
 - [x] `window.renderMarkdown(payload)` entry point; Swift injects via JSONSerialization through `evaluateJavaScript` (no string concatenation)
@@ -378,7 +386,7 @@ None. Markdown Web Preview Phase 0/1/2 has been delivered; see "Completed" below
 - [x] Manual simulator acceptance with `html_cards.md` / `dark_theme_cards.md`: cards form correctly and dark mode has no dark-on-dark text
 - [x] `xcodebuild build` passes
 
-**Phase 1 — Files MVP (serial, main agent)** ✅
+**Phase 1 ΓÇö Files MVP (serial, main agent)** Γ£à
 - [x] `FileContentView`'s `showPreview: Bool` became a `MarkdownPreviewMode` enum (`native` / `web` / `source`)
 - [x] The toolbar's two-state button became a Picker Menu: `Native Preview` / `Web Preview` / `Markdown Source`
 - [x] `contentView(text:)` dispatches by mode; large-file protection kept (native over threshold falls back to source; web over threshold goes through an oversize gate with confirmation first)
@@ -389,12 +397,12 @@ None. Markdown Web Preview Phase 0/1/2 has been delivered; see "Completed" below
 - [x] `xcodebuild build` passes
 - [x] UITEST_WEB_PREVIEW_FIXTURE + MarkdownWebPreviewUITests (all 5 tests pass, including security sentinel assertions)
 
-**Phase 2 — Security and polish (serial, main agent)** ✅
+**Phase 2 ΓÇö Security and polish (serial, main agent)** Γ£à
 - [x] DOMPurify allowlist blocks `script`/`iframe`/`form`/`object`/`embed`/`on*`/`javascript:` (shell config + malicious_script fixture UI assertions that the sentinel renders and script does not execute)
 - [x] `WKNavigationDelegate` intercepts non-file/fragment navigation + external links to onOpenExternalURL; workspace-relative links resolve through resolveRelativeReference into fileToOpenInFilesTab
 - [x] The WebView uses a non-persistent data store
 - [x] Theming: input carries colorScheme; updateUIView re-renders on input diff without rebuilding the WebView (the container reads @Environment(\.colorScheme))
-- [x] UI tests: mode switching web↔source↔native round trips (UITEST_WEB_PREVIEW_MODE_FIXTURE)
+- [x] UI tests: mode switching webΓåösourceΓåönative round trips (UITEST_WEB_PREVIEW_MODE_FIXTURE)
 - [x] Unit tests: 8 image/link path preprocessing cases (same directory / subdirectory / ./ / `../` / deep / workspace absolute / external / nil mdPath)
 - [x] `xcodebuild build` + `xcodebuild test` pass serially (291 passed, no regressions)
 
@@ -405,8 +413,8 @@ device (non-simulator) acceptance; custom URL scheme large-image optimization (t
 Known fixture detail: html_cards' per-status colors are not fully reproduced (cards form but the palette reads neutral);
 non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned later.
 
-- [x] **PR merged** — design-redesign / Web Preview is on master
-- [x] **Model list** — no more hardcoded preset table to maintain; moved to the PR #149 shortlist
+- [x] **PR merged** ΓÇö design-redesign / Web Preview is on master
+- [x] **Model list** ΓÇö no more hardcoded preset table to maintain; moved to the PR #149 shortlist
 
 ## Completed (recent)
 
@@ -419,8 +427,8 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
 
 - [x] **Quiet Tech visual design language landed (2026-05-29)**:
   - [x] Background: the "Quiet Tech calm-tech" design spec locked in `docs/design.md` (PR #62) was brought into SwiftUI code, iterating screen by screen against the four mockups in `docs/design_images/` with simulator screenshots until they matched
-  - [x] `DesignTokens`: Brand primary → electric blue `#3B82F6`, with gold reserved for "AI working"; surface/composer filled with the spec's dark values. Token **names unchanged** so every View keeps referencing them, avoiding sweeping changes
-  - [x] Three-state card language: info cards (tool) keep a neutral surface but **icons/tool name/file path/chevron use electric blue** as the "tappable" cue (neutral card body, accent only on interactive elements); action cards (permission) get a 3pt blue left bar + plain text buttons (dropping the green/blue/red solid buttons); patch cards dropped orange → single blue accent
+  - [x] `DesignTokens`: Brand primary ΓåÆ electric blue `#3B82F6`, with gold reserved for "AI working"; surface/composer filled with the spec's dark values. Token **names unchanged** so every View keeps referencing them, avoiding sweeping changes
+  - [x] Three-state card language: info cards (tool) keep a neutral surface but **icons/tool name/file path/chevron use electric blue** as the "tappable" cue (neutral card body, accent only on interactive elements); action cards (permission) get a 3pt blue left bar + plain text buttons (dropping the green/blue/red solid buttons); patch cards dropped orange ΓåÆ single blue accent
   - [x] Message area: user messages keep the 3pt blue left bar + muted background (divider above removed, spacing does the separating); AI replies have no container
   - [x] Composer: collapsed into a single pill, mic moved inside on the left (no border), send as a solid blue rounded square on the right (stop replaces it while busy)
   - [x] Toolbar: plain glyphs replace filled circles; the model selector went from a solid blue capsule to an outlined chip
@@ -430,7 +438,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
   - [x] iPhone tool/patch cards in a two-column grid (information density); three columns on iPad
   - [x] Bug fix: messages now load when a session is restored after restart (`loadSessions` previously only set `currentSessionID`; `selectSession` short-circuited because the id already matched and never pulled messages, so a restart landed on the last session showing blank history until you manually switched away and back)
   - [x] Verification: iPhone 16 Pro + iPad Pro 11" builds clean; screenshots against a local server's real data compared for Chat (empty state + tool/patch/permission cards) / Settings / the iPad three columns
-  - **PR**: #63 — feat(design): implement the "Quiet Tech" visual language
+  - **PR**: #63 ΓÇö feat(design): implement the "Quiet Tech" visual language
 
 - [x] **Realtime speech WebSocket recovery V2 (2026-05-25)**:
   - [x] Product semantics: a WebSocket drop during a long recording does not interrupt the recording; the client recovers from a local PCM cache instead of failing only at Stop
@@ -460,7 +468,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
   - [x] Generated the visionOS three-layer icon (background / middle / foreground) from the existing `OpenCodeClient/Assets.xcassets/AppIcon.appiconset/AppIcon.png`
   - [x] Layering was ultimately done programmatically from the original image's colors rather than adopting the model's transparent layers directly; the composite preview then matches the original pixel for pixel, avoiding transparent backgrounds painted as checkerboards by the model or colored fringes left by green-screen keying
   - [x] Added `OpenCodeClientVisionAssets.xcassets/AppIcon.solidimagestack`, included only in the `OpenCodeClientVision` target's Resources; the shared `OpenCodeClient/Assets.xcassets` keeps only the iOS `AppIcon`
-  - [x] The visionOS app icon catalog uses Xcode's generated `.solidimagestack` / `.solidimagestacklayer` structure; each layer's `Content.imageset` uses `idiom: vision` and `scale: 2x`, pointing at 1024×1024 PNGs
+  - [x] The visionOS app icon catalog uses Xcode's generated `.solidimagestack` / `.solidimagestacklayer` structure; each layer's `Content.imageset` uses `idiom: vision` and `scale: 2x`, pointing at 1024├ù1024 PNGs
   - [x] Both the `OpenCodeClient` and `OpenCodeClientVision` targets use `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`; because the two targets reference different asset catalogs, iOS uses the flat `AppIcon.appiconset` and visionOS uses `AppIcon.solidimagestack`
   - [x] Verification: `OpenCodeClient` iphonesimulator build passes; `OpenCodeClientVision` xrsimulator build passes; `assetutil --info` confirms the compiled `Assets.car` contains a `SolidImageStack` named `AppIcon` with the three layers Back / Middle / Front
 
@@ -469,10 +477,10 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
   - [x] The composer's right-side mic / send / stop action buttons grew from 32pt to 48pt on visionOS with vertical spacing loosened to 12pt, making gaze interaction easier; iPhone/iPad keep the original 32pt size
   - [x] The stop button while the AI is busy became a red icon + tint background/border matching the recording active state, instead of a solid red background, so the red semantics survive better under visionOS glass/material
   - [x] The composer's bottom container padding became a design token: visionOS uses 32pt horizontal / 20pt vertical, iPhone/iPad keep 16pt / 10pt, keeping the bottom-right button away from the Apple Vision Pro window resize handle
-  - [x] The composer input height became a cross-platform token: visionOS 48–160pt, iPhone/iPad 32–100pt, so the input area in large windows is no longer limited to phone height
+  - [x] The composer input height became a cross-platform token: visionOS 48ΓÇô160pt, iPhone/iPad 32ΓÇô100pt, so the input area in large windows is no longer limited to phone height
   - [x] The tool-call header's right-side open-file icon grew to a 44pt hit target + `title3` icon on visionOS, easing eye/hand opening of patch/edit detail files; iPhone/iPad keep the compact 24pt size
   - [x] The visionOS split view's left Workspace / Sessions sidebar width set to 130% of the iPad default (`1.3 / 6.0`), with the minimum width raised from 10% to 13% in step
-  - [x] `OpenCodeClientVision`'s default window size set to 2304×1080, about 180% of the system default width and 150% of its height, reducing the need to manually enlarge the window after first launch
+  - [x] `OpenCodeClientVision`'s default window size set to 2304├ù1080, about 180% of the system default width and 150% of its height, reducing the need to manually enlarge the window after first launch
   - [x] Later, based on real-device impressions, the default window was made narrower and slightly taller: width from 2304 down to 1382 (about 60%), height from 1080 up to 1188 (about 110%); then width nudged to 1500 with height kept at 1188
   - [x] Later still the default window width went to 2000, height kept at 1188
   - [x] Verification: `OpenCodeClientVision` xrsimulator build passes; `OpenCodeClient` iphonesimulator build passes
@@ -511,8 +519,8 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
   - [x] `FileContentView`: passes `state.currentSession?.directory` into `MarkdownPreviewView` / `WorkspaceMarkdownImageProvider`, keeping file preview and chat view consistent on workspace path semantics
   - [x] Test fix: `WorkspaceMarkdownImageProviderTests.decodesBase64DataURL()` now uses the base64 of a real 1x1 PNG instead of the invalid `"hello"` payload; added absolute-workspace prefix stripping coverage
   - [x] Verification: `xcodebuild -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4' build` passes; `test` on the same destination passes
-  - **Commit**: `5554fe9` — fix: render markdown report images on ios
-  - **Commit**: `45044d4` — test: align markdown image provider data-url coverage
+  - **Commit**: `5554fe9` ΓÇö fix: render markdown report images on ios
+  - **Commit**: `45044d4` ΓÇö test: align markdown image provider data-url coverage
 
 - [x] **Markdown caption image block preview fix (2026-05-03)**:
   - [x] Root cause confirmed: when `![image](url)` is immediately followed by a caption with no blank line between, MarkdownUI parses the image as an inline image inside a paragraph, bypassing `WorkspaceMarkdownImageProvider`, so remote large images displayed at original size and could not be tapped for preview.
@@ -520,31 +528,31 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
   - [x] `WorkspaceMarkdownImageProvider` gained a direct URLSession download path for remote HTTP(S) images, so remote images no longer depend on the OpenCode server's base64 file endpoint.
   - [x] Added normalizer tests and HTTP(S) URL path tests; verified `xcodebuild test` passes.
 
-- [x] **Visual redesign Phase 2 — Mic button + color unification + interaction fixes (2026-04-01)**:
+- [x] **Visual redesign Phase 2 ΓÇö Mic button + color unification + interaction fixes (2026-04-01)**:
   - [x] Mic button moved into a VStack above the send button, with a rounded border (1.5pt brand blue) so it reads as a tappable button
   - [x] Brand primary changed from dark blue `(0.15, 0.25, 0.55)` to system blue `(0.0, 0.478, 1.0)`, unified with the iOS accent
   - [x] All 7 `.accentColor` occurrences replaced with `DesignColors.Brand.primary` (4 in ChatToolbarView, 1 in SessionListView, 1 in ContextUsageView, 1 in ToolPartView)
   - [x] Transcribing state visible again (`surfaceLight`/`surfaceDark` backgrounds replace `Color.clear`)
   - [x] Restored sending while the AI works (send button always visible, stop/abort shown below at the same time)
-  - **Commit**: `122f29c` — fix: mic button to right side with border, unify brand color to system blue
-  - **Commit**: `4bf2e12` — fix: restore transcribing visual feedback and send-while-busy
+  - **Commit**: `122f29c` ΓÇö fix: mic button to right side with border, unify brand color to system blue
+  - **Commit**: `4bf2e12` ΓÇö fix: restore transcribing visual feedback and send-while-busy
 
 - [x] **Design Token test coverage (2026-04-01)**:
   - [x] Added `DesignTokensTests` (9 tests): exact spacing values + monotonic increase, corner radii in ascending order, brand primary/gold RGB ranges, opacity valid range + dark > light, animation slots exist, semantic colors pairwise distinct
   - [x] All tests pass, `xcodebuild test` green
 
 - [x] **Visual redesign Phase 1 (2026-04-01)**:
-  - [x] `docs/design.md` — complete design doc covering 11 improvement directions
-  - [x] `DesignTokens.swift` — centralized design system (Brand primary dark blue + gold, semantic colors, warm gray neutrals, seven type sizes, spacing, corner radii, animation presets, shadows)
+  - [x] `docs/design.md` ΓÇö complete design doc covering 11 improvement directions
+  - [x] `DesignTokens.swift` ΓÇö centralized design system (Brand primary dark blue + gold, semantic colors, warm gray neutrals, seven type sizes, spacing, corner radii, animation presets, shadows)
   - [x] 17 view files redesigned: MessageRowView, ChatTabView, ChatToolbarView, ToolPartView, PatchPartView, PermissionCardView, QuestionCardView, SessionListView, ContextUsageView, StreamingReasoningView, TodoListInlineView, FileTreeView, FileContentView, SettingsTabView, SplitSidebarView, ContentView, L10n
   - [x] Message direction B (no bubbles + 4pt left color bar), AI messages as plain text with no container
   - [x] Composer redesign (mic embedded left, send/stop square buttons right, borderless input field)
   - [x] Toolbar model+agent merged into a config sheet, Rename demoted to .secondary
   - [x] Unified card language: info cards lose borders, action cards gain a left color bar
-  - [x] Context ring shrunk 18pt + pulsing animation at ≥85%
+  - [x] Context ring shrunk 18pt + pulsing animation at ΓëÑ85%
   - [x] All new L10n keys (configureTitle/Model/Agent/NoAgents) carry en/zh translations
   - [x] Fixed Gemini subagent misoperations (PathNormalizer, APIConstants/StorageKeys restoration, hardcoded strings)
-  - **Commit**: `b6ed2ac` — feat: redesign visual design system — design tokens, card language, composer, toolbar
+  - **Commit**: `b6ed2ac` ΓÇö feat: redesign visual design system ΓÇö design tokens, card language, composer, toolbar
   - **Advanced items not yet implemented** (P1: session summary preview, child session connector lines, session-switch crossfade, permission slide-in animation, message appearance animation; P2: tool card spring expansion, logo empty-state breathing animation, dark logo asset)
 
 - [x] **Avoid mutating state synchronously during view updates on session switch (2026-03-30)**:
@@ -603,8 +611,8 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
   - [x] Fix: renamed to `syncModelFromMessageHistory()`, removed the skip-if-persistence-nonempty guard, and after every message load it infers the actual model from message history and updates the selection; `applySavedModelForCurrentSession()` stays as the synchronous fast path
 
 - [x] **Context ring always visible + value held while the AI processes (2026-03-14)**:
-  - [x] Root cause 1: `ChatTabView` injected a `ProgressView` into `.navigationBarTrailing` when `state.isBusy`, visually covering the ring → that ProgressView block was deleted
-  - [x] Root cause 2: while the AI processes, the server creates a new assistant message carrying `tokens: {total: 0}`, and the old `tokens != nil` filter matched that empty message, making the ring show 0% → changed to `tokens != nil && tokens.total > 0`, skipping empty-token messages
+  - [x] Root cause 1: `ChatTabView` injected a `ProgressView` into `.navigationBarTrailing` when `state.isBusy`, visually covering the ring ΓåÆ that ProgressView block was deleted
+  - [x] Root cause 2: while the AI processes, the server creates a new assistant message carrying `tokens: {total: 0}`, and the old `tokens != nil` filter matched that empty message, making the ring show 0% ΓåÆ changed to `tokens != nil && tokens.total > 0`, skipping empty-token messages
   - [x] Caching: `AppState._cachedContextUsage` (`@ObservationIgnored`) caches the last valid snapshot; returns the cached value while messages are loading or provider config is missing (same-session only); the cache clears on session switch
 
 - [x] **Live display of speech partial transcripts (2026-03-11)**:
@@ -618,9 +626,9 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
   - [x] A second fallback kept inside MarkdownPreviewView; debug logs kept in loadContent and onAppear
 
 - [x] **Realtime Speech transcription fix (2026-03-11)**:
-  - [x] Root cause 1: API URL construction error — `URL(string: "/v1/...", relativeTo: base)` replaces the base's path, so `https://space.ai-builders.com/backend` requested `/v1/...` instead of `/backend/v1/...`
+  - [x] Root cause 1: API URL construction error ΓÇö `URL(string: "/v1/...", relativeTo: base)` replaces the base's path, so `https://space.ai-builders.com/backend` requested `/v1/...` instead of `/backend/v1/...`
   - [x] Fix: `buildAPIURL` ensures the base path ends with `/` so relative paths append correctly; session creation and testConnection both switched to this helper
-  - [x] Root cause 2: m4a to PCM conversion failed — `AVAudioConverter` has known problems with AAC/m4a and threw `nilError`
+  - [x] Root cause 2: m4a to PCM conversion failed ΓÇö `AVAudioConverter` has known problems with AAC/m4a and threw `nilError`
   - [x] Fix: switched to the `ExtAudioFile` API for reading and conversion, outputting 24kHz 16-bit mono PCM directly
   - [x] Added `buildAPIURLPreservesMountPath` and `buildAPIURLWithoutMountPath` unit tests
   - [x] Added SpeechProfile debug logs (session POST url, ws_url, websocket connect, per-step failure details)
@@ -628,7 +636,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
 - [x] **Session tree hierarchy view (2026-03-03)**:
   - [x] Background: when an agent dispatches a background sub-agent it creates a child session (`Session.parentID` pointing at the parent), and showing all sessions flat cluttered the list
   - [x] Implementation: a `SessionNode` tree structure + the `AppState.buildSessionTree(from:)` static method, building the hierarchy recursively by `parentID`; orphan sessions (parentID pointing at a nonexistent session) are automatically promoted to root nodes
-  - [x] UI: child sessions indent (depth × 24pt), shrink font (`.subheadline`), fade color (`.secondary`); parent sessions show a chevron collapse/expand button on the left
+  - [x] UI: child sessions indent (depth ├ù 24pt), shrink font (`.subheadline`), fade color (`.secondary`); parent sessions show a chevron collapse/expand button on the left
   - [x] `expandedSessionIDs: Set<String>` tracks expansion state (collapsed by default), toggled by `toggleSessionExpanded()`
   - [x] iPhone (`SessionListView`) and iPad (`SplitSidebarView.SessionsSidebarList`) both updated to tree-recursive rendering
   - [x] Unit tests: 7 tests covering hierarchy building, orphan handling, sorting, multi-level nesting, empty input, archive filtering, and collapse state toggling
@@ -637,7 +645,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
   - [x] Root cause: `POST /session` does not accept a directory, so new sessions always land in the server's current project; the iOS project picker only filters the list and does not change the creation target
   - [x] Implementation: the create button appears only for Server default; with a specific project selected, the create button grays out + an info icon points to switching on the server side
   - [x] `canCreateSession`, `chatCreateDisabledHint`; ChatToolbarView and SessionListView gray out + info
-  - [x] Docs: lessons §16, RFC §4.3.1, PRD §4.4.3
+  - [x] Docs: lessons ┬º16, RFC ┬º4.3.1, PRD ┬º4.4.3
 - [x] **Project selection (completed 2026-02-25)**:
   - [x] PRD/RFC update: added the Project (Workspace) design
   - [x] Implemented the `Project` data model, `APIClient.projects()`, `sessions(directory:limit:)`
@@ -667,7 +675,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
   - [x] AppState integration: SSH connection status
   - [x] Unit tests
   - [x] Added the Citadel dependency (SPM)
-  - [x] Implemented the actual SSH connection logic (local 127.0.0.1:4096 → SSH DirectTCPIP → VPS 127.0.0.1:remotePort)
+  - [x] Implemented the actual SSH connection logic (local 127.0.0.1:4096 ΓåÆ SSH DirectTCPIP ΓåÆ VPS 127.0.0.1:remotePort)
   - [x] Fixed the project deployment target (so UITests can run on the simulator)
 - [x] **UI improvement** (low priority): busy state uses a spinner instead of a round button
 - [x] **Permission request interaction fix**: supports Allow once / Allow always / Reject, and ensures POST `/session/:id/permissions/:permissionID` carries the body `{"response":...}`
@@ -684,7 +692,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
 - [x] **AppState refactor (Iteration C - ActivityTracker)**: activity state derivation/debounce/duration rules extracted, with behavior tests added
 - [x] **Activity Row early-completed fix**: stays running when session.status goes idle but tools are still running/pending or streaming continues, so the clock does not stop early
 - [x] **SSH UX completeness**: Settings gained "Copy Public Key", a setup guide, and gray hint text (after enabling SSH you must tap Test Connection above)
-- [x] **Session rapid-switch race fix (full fetch)**: added requestedSessionID validation to `loadMessages/loadSessionDiff`, discarding stale responses so A→B→A is not overwritten by old B results
+- [x] **Session rapid-switch race fix (full fetch)**: added requestedSessionID validation to `loadMessages/loadSessionDiff`, discarding stale responses so AΓåÆBΓåÆA is not overwritten by old B results
 - [x] **Activity Row early-completed (second) fix**: the `running/completed` decision became "current turn + busy state first", no longer relying on `completedAt == nil`, avoiding a false completed while still running
 - [x] **SSH UX fix**: default Server Address changed to `127.0.0.1:4096`; config changes auto-reconnect after SSH is enabled; View Public Key no longer blank in the enabled scenario; the `Set Server Address` CTA became an explicit blue button
 - [x] **Settings close button consistency**: the sheet's top-right button is now English `Close`, avoiding the former Chinese close label appearing in the English UI
@@ -717,33 +725,33 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
 - [x] Unit tests: defaultServerAddress, sessionDecoding, messageDecoding, sseEvent, partDecoding
 - [x] UI polish: larger input box (3-8 lines, capsule shape), gradient model selector capsule, SF Symbols rendering style, message bubble refinements, softened tool/patch/permission card corners, MarkdownUI for chat message rendering
 - [x] Chat: AI responses support text selection/copy (with Markdown rendering)
-- [x] Chat → file navigation: switched to URLComponents for query encoding, unified file path normalization; added an empty-content warning log
+- [x] Chat ΓåÆ file navigation: switched to URLComponents for query encoding, unified file path normalization; added an empty-content warning log
 - [x] Tool cards: reason/title collapsed state max two lines + ellipsis; expanded state shows the full Reason
 - [x] Session Todo (task list): supports `/session/:id/todo` fetch + SSE `todo.updated` updates; renders todos inside the `todowrite` tool card (option B, no persistent top bar)
 - [x] Phase 3: Think Streaming delta
 - [x] Phase 3: iPad / Vision Pro layout: `horizontalSizeClass == .regular` splits left/right (Files left, Chat right), Settings as a toolbar button
-- [x] iPad / Vision Pro layout upgrade: three columns (NavigationSplitView) — left Workspace (Files+Sessions) / middle Preview / right Chat
-- [x] iPad three-column widths: Workspace ≈ 1/6; Preview ≈ 5/12; Chat ≈ 5/12
+- [x] iPad / Vision Pro layout upgrade: three columns (NavigationSplitView) ΓÇö left Workspace (Files+Sessions) / middle Preview / right Chat
+- [x] iPad three-column widths: Workspace Γëê 1/6; Preview Γëê 5/12; Chat Γëê 5/12
 - [x] iPad three columns draggable: default ideal widths set, but users can drag the dividers
 - [x] iPad inline file preview: selecting a file on the left or tapping a file in a Chat tool/patch updates the middle Preview (no more sheet)
 - [x] iPad Preview refresh button: manual refresh at the top-right of the middle column (reloads file content)
 - [x] Test coverage: SSE event structure, session filtering, PathNormalizer, path normalization
 - [x] iPad message stream density: tool/patch/permission cards fill horizontally in the iPad three-column grid; text parts still take the full row
-- [x] PathNormalizer hardening: percent-encoding decode, file:// compatibility, basic ../ defense, absolute path → workspace-relative resolution (fixes empty-content tool read previews)
-- [x] Doc sync: PRD/RFC gained the iPad three-column grid notes; lessons.md gained the "PRD/RFC→code→test→build/test" workflow
+- [x] PathNormalizer hardening: percent-encoding decode, file:// compatibility, basic ../ defense, absolute path ΓåÆ workspace-relative resolution (fixes empty-content tool read previews)
+- [x] Doc sync: PRD/RFC gained the iPad three-column grid notes; lessons.md gained the "PRD/RFCΓåÆcodeΓåÆtestΓåÆbuild/test" workflow
 - [x] Code review archived
-- [x] Voice input (AI Builder Speech Recognition): record (mic permission) → call `/v1/audio/transcriptions` → append text to the input box
+- [x] Voice input (AI Builder Speech Recognition): record (mic permission) ΓåÆ call `/v1/audio/transcriptions` ΓåÆ append text to the input box
 - [x] iPad external keyboard: Enter sends (submitLabel/send + keyboardShortcut Return)
 - [x] Network security boundary: http:// forbidden on WAN (https:// enforced); Settings shows the scheme and a hint
 - [x] 3.1 apply_patch displays as "patch" (ToolPartView.toolDisplayName)
 - [x] 3.2 Settings HTTP scheme shown orange + info icon
 - [x] 1.1 AppState detailed planning
-- [x] Bug: tool layout — thinking merges into the last MessageRowView instead of starting a new row that breaks the grid
-- [x] Bug: Diff/file preview — horizontal scrolling, minWidth fill, textSelection
-- [x] Bug: Markdown source view width — after Markdown/Preview switching the source view only took the left half and wrapped early (switched to RawTextView so text fills the available width)
+- [x] Bug: tool layout ΓÇö thinking merges into the last MessageRowView instead of starting a new row that breaks the grid
+- [x] Bug: Diff/file preview ΓÇö horizontal scrolling, minWidth fill, textSelection
+- [x] Bug: Markdown source view width ΓÇö after Markdown/Preview switching the source view only took the left half and wrapped early (switched to RawTextView so text fills the available width)
 - [x] Todo 2.4 left unemphasized per option B
 - [x] Recent commit/push: 9b4b842 (tool layout, Diff preview, Settings HTTP info, 1.1 planning, 2.4)
-- [x] **GLM-4.7 → GLM5**: model updated to `zai-coding-plan` / `glm-5`
+- [x] **GLM-4.7 ΓåÆ GLM5**: model updated to `zai-coding-plan` / `glm-5`
 - [x] **New model**: added `openai` / `gpt-5.3-codex-spark` (GPT-5.3 Codex Spark)
 - [x] **iPhone model short names**: the iPhone top bar model chip shows `GPT` / `Spark` / `Opus` / `GLM`, iPad shows full names
 - [x] **Tool card color coding**: `todowrite` uses a green accent, other tools use the theme color (accentColor), for fast scanning
@@ -758,7 +766,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
 - [x] **Session list sorted by update time**: `sortedSessions` orders by `time.updated` descending
 - [x] **Session row time shows update time**: the session list's "xx minutes ago" now uses `time.updated`
 - [x] **Session list de-blued**: list text uses neutral (gray) colors, with the current session highlighted by background
-- [x] **Session action button reorder**: the Chat top toolbar's left buttons are now Session list → rename → Compact → new session
+- [x] **Session action button reorder**: the Chat top toolbar's left buttons are now Session list ΓåÆ rename ΓåÆ Compact ΓåÆ new session
 - [x] **Blank-on-session-switch bug fix**: messages/parts/streaming state clear first before the new session's data loads
 - [x] **Server error message display**: an assistant message carrying `error.data.message` shows a red card in the stream
 - [x] **iPad sidebar split top/bottom**: the left side is now Files (File Tree) on top and Sessions below (tapping a session switches the right Chat session)
@@ -772,7 +780,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
 - [x] **Model selection remembered per session**: switching sessions restores that session's last chosen model (no global overwrite)
 - [x] **Duplicate send fix**: busy/polling scenarios dedup the optimistic temp user message so the UI does not show two
 - [x] **Busy/Retry session polling enhancement**: `retry` treated the same as `busy`; polling auto-refreshes while busy and stops when it exits
-- [x] **Chat Activity message**: "current action + elapsed time" renders as the last item in the message stream (remembered per session); updates every second while running, freezes as Completed when done and stays until the next run; copy follows web: reasoning extracts `**title**` into `Thinking - title`, tools map by type to "Searching/Making edits/Running…"
+- [x] **Chat Activity message**: "current action + elapsed time" renders as the last item in the message stream (remembered per session); updates every second while running, freezes as Completed when done and stays until the next run; copy follows web: reasoning extracts `**title**` into `Thinking - title`, tools map by type to "Searching/Making edits/RunningΓÇª"
 - [x] **loadMessages decode fallbacks**: supports empty body / non-array payloads (`messages`/`data`/`result` wrappers, single object) so polling does not break on parse failure
 - [x] **Message visibility during streaming**: poll merging keeps the temp user message and the streaming assistant draft (preventing UI flicker/loss when busy lists go empty)
 - [x] **Chat empty states**: distinct hints for no session / busy(retry) / empty messages; scroll anchor includes streaming delta length to avoid stale scrolling
@@ -806,7 +814,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
 
 1. **Local network prohibited (iOS)**: connecting to `192.168.180.128:4096` errors with `Local network prohibited`. Info.plist needs:
    - `NSLocalNetworkUsageDescription`: explains why local network access is needed; the permission dialog appears on first access
-   - `NSAppTransportSecurity` → `NSAllowsLocalNetworking`: allows HTTP to local IPs
+   - `NSAppTransportSecurity` ΓåÆ `NSAllowsLocalNetworking`: allows HTTP to local IPs
    - The user must tap "Allow" in the dialog to connect
 
 2. **Stuck after send**: a failed send gave no feedback and the input box was already cleared, so the user never knew. Fix: restore the input on send failure, show an error alert, and show loading while sending
@@ -822,7 +830,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
 
 6. **Terminology clarification**: Think streaming actually refers to the Think (ReasoningPartView) expand/collapse behavior, not Tool.
 
-7. **Polling messages parse noise**: during busy/retry, occasional `The data couldn’t be read because it is missing` (empty body / unstable payload shapes). Fix: APIClient gained an empty body guard + multi-shape decode fallbacks; AppState catches DecodingError and only logs, so polling is not mistaken for a connection failure.
+7. **Polling messages parse noise**: during busy/retry, occasional `The data couldnΓÇÖt be read because it is missing` (empty body / unstable payload shapes). Fix: APIClient gained an empty body guard + multi-shape decode fallbacks; AppState catches DecodingError and only logs, so polling is not mistaken for a connection failure.
 
 8. **SSH runtime fatal (NIO channel state)**: occasional `Sent channel window adjust on channel in invalid state` when scrolling the Settings page and similar. Traced to `SSHTunnelManager` calling NIO `channel.close/context.close` directly from NW callback threads, racing the state machine; fixed by scheduling all closes through `eventLoop.execute`.
 
@@ -830,7 +838,7 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
 
 10. **View Public Key still blank in some cases**: when SSH was enabled but the connection failed, the old logic read the cached public key first and could hit an empty string, leaving the sheet empty. Fix: opening the sheet always goes through `generateOrGetPublicKey()` with trim + empty guard, and anomalies surface the error dialog.
 
-11. **Tailscale MagicDNS needs an ATS exception**: company policy requires ATS/HTTPS for all hosts, but servers behind Tailscale MagicDNS (`*.ts.net`) usually run HTTP. Fix: under Info.plist's `NSAppTransportSecurity` add `NSExceptionDomains` → `ts.net` → `NSExceptionAllowsInsecureHTTPLoads: true` + **`NSIncludesSubdomains: true`** (key point: without it `ts.net` does not match subdomains like `host.example.ts.net`), exempting only the Tailscale domain from the HTTPS requirement; other domains stay under ATS. **Malformed Server Address format**: iOS `.textContentType(.URL)` or pasting can produce `host://host:port`, sending requests to port 80 with ECONNREFUSED. Fix: `correctMalformedServerURL` corrects the malformed form; `ensureServerURLHasScheme` prepends `http://` when http/https is missing; correction happens on **lose focus** (`@FocusState` + `onChange`) to avoid rewriting per character; the keyboard `submitLabel(.done)` shows Done.
+11. **Tailscale MagicDNS needs an ATS exception**: company policy requires ATS/HTTPS for all hosts, but servers behind Tailscale MagicDNS (`*.ts.net`) usually run HTTP. Fix: under Info.plist's `NSAppTransportSecurity` add `NSExceptionDomains` ΓåÆ `ts.net` ΓåÆ `NSExceptionAllowsInsecureHTTPLoads: true` + **`NSIncludesSubdomains: true`** (key point: without it `ts.net` does not match subdomains like `host.example.ts.net`), exempting only the Tailscale domain from the HTTPS requirement; other domains stay under ATS. **Malformed Server Address format**: iOS `.textContentType(.URL)` or pasting can produce `host://host:port`, sending requests to port 80 with ECONNREFUSED. Fix: `correctMalformedServerURL` corrects the malformed form; `ensureServerURLHasScheme` prepends `http://` when http/https is missing; correction happens on **lose focus** (`@FocusState` + `onChange`) to avoid rewriting per character; the keyboard `submitLabel(.done)` shows Done.
 
 ## Decision Records
 
@@ -838,11 +846,11 @@ non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned
 
 ## API Verification (localhost:4096)
 
-- **GET /project**: ✅ returns `Project[]` with id/worktree/vcs/time
-- **GET /session?directory=&limit=**: ✅ filters sessions by worktree, limit defaults to 100
-- **GET /global/health**: ✅ `{ healthy, version }`
-- **GET /config/providers**: ✅ returns `providers: array` (not dict), each item carrying `id`, `name`, `models: { modelID: ModelInfo }`. iOS parsing fixed.
-- **GET /agent**: ✅ returns `[AgentInfo]` with name/description/mode/hidden/native fields. The iOS side filters mode=subagent.
+- **GET /project**: Γ£à returns `Project[]` with id/worktree/vcs/time
+- **GET /session?directory=&limit=**: Γ£à filters sessions by worktree, limit defaults to 100
+- **GET /global/health**: Γ£à `{ healthy, version }`
+- **GET /config/providers**: Γ£à returns `providers: array` (not dict), each item carrying `id`, `name`, `models: { modelID: ModelInfo }`. iOS parsing fixed.
+- **GET /agent**: Γ£à returns `[AgentInfo]` with name/description/mode/hidden/native fields. The iOS side filters mode=subagent.
 - **Import from Server**: depends on config/providers; should import fine after the parsing fix.
 
 Current model presets (4):
@@ -870,8 +878,8 @@ Added a "tool card rendering redo" section at the end of design.md. **Note: a pi
 
 Three concrete changes:
 1. **Distinguish who is speaking**: user messages keep the blue left bar; OpenCode replies **drop the avatar** but add an "OpenCode" text title + **keep the existing model small print** (untouched). The two are clearly separated by different visual styles.
-2. **File cards in a 2-column grid**: patch/edit/write/read → file cards (file icon + file name + chevron) laid out in a 2-column grid.
-3. **Merge into "N tool calls"**: other tools → `▸ 3 tool calls`, expandable to see each one inside.
+2. **File cards in a 2-column grid**: patch/edit/write/read ΓåÆ file cards (file icon + file name + chevron) laid out in a 2-column grid.
+3. **Merge into "N tool calls"**: other tools ΓåÆ `Γû╕ 3 tool calls`, expandable to see each one inside.
 
 Layout: layout-first near-chronological order (adjacent same-type items aggregate), with no grouping and no section headers. Boundaries: no pixel-art style, the model selector stays untouched, no user avatar in the top-right corner, and AI working keeps the existing subtle gold animation.
 
