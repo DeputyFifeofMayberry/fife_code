@@ -168,6 +168,9 @@ enum L10n {
         case hostConnectionErrorInvalidURL
         case hostConnectionErrorBasicAuthRejected
         case hostConnectionErrorUnrecognizedGeneration
+        case hostConnectionErrorGatewayUnreachable
+        case errorCopyButton
+        case errorCopied
         case hostConnectionErrorHTTPStatus
         case hostConnectionErrorCannotConnect
         case hostConnectionErrorTimedOut
@@ -617,6 +620,9 @@ enum L10n {
         Key.hostConnectionErrorInvalidURL.rawValue: "Invalid OpenCode URL. Check the host address and port.",
         Key.hostConnectionErrorBasicAuthRejected.rawValue: "OpenCode rejected Basic Auth. Check username and password.",
         Key.hostConnectionErrorUnrecognizedGeneration.rawValue: "Server is not a recognizable OpenCode v1 or v2 API (health: HTTP %@, info: HTTP %@).",
+        Key.hostConnectionErrorGatewayUnreachable.rawValue: "Server unreachable behind a proxy or tunnel (health: HTTP %@, info: HTTP %@). Is the OpenCode process on the server running?",
+        Key.errorCopyButton.rawValue: "Copy Error",
+        Key.errorCopied.rawValue: "Copied",
         Key.hostConnectionErrorHTTPStatus.rawValue: "OpenCode returned HTTP %d. Check the server logs or provider setup.",
         Key.hostConnectionErrorCannotConnect.rawValue: "Could not connect to OpenCode. Check network reachability and that the server is running.",
         Key.hostConnectionErrorTimedOut.rawValue: "Connection timed out. Check the host, port, VPN/Tailscale, and firewall.",

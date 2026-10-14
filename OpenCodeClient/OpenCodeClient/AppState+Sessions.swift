@@ -181,11 +181,27 @@ extension AppState {
             )
         case .unrecognized(let healthStatus, let infoStatus):
             isConnected = false
-            let message = L10n.t(
-                .hostConnectionErrorUnrecognizedGeneration,
-                healthStatus.map(String.init) ?? "?",
-                infoStatus.map(String.init) ?? "?"
-            )
+            // Live finding (2026-10-13): 502/504 on both legs means a reverse
+            // proxy (tailscale serve, nginx, ...) is alive while the OpenCode
+            // process behind it is down — a different failure than an
+            // unrecognized server, and it deserves its own message.
+            let gatewayStatuses: Set<Int> = [502, 504]
+            let healthLegGateway = healthStatus.map { gatewayStatuses.contains($0) } ?? true
+            let infoLegGateway = infoStatus.map { gatewayStatuses.contains($0) } ?? false
+            let message: String
+            if infoLegGateway && healthLegGateway {
+                message = L10n.t(
+                    .hostConnectionErrorGatewayUnreachable,
+                    healthStatus.map(String.init) ?? "?",
+                    infoStatus.map(String.init) ?? "?"
+                )
+            } else {
+                message = L10n.t(
+                    .hostConnectionErrorUnrecognizedGeneration,
+                    healthStatus.map(String.init) ?? "?",
+                    infoStatus.map(String.init) ?? "?"
+                )
+            }
             connectionError = message
             updateConnectionDiagnostic(
                 phase: .failed,

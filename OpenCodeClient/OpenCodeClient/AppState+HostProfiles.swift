@@ -205,7 +205,8 @@ extension AppState {
     }
 
     func writeRuntimeCredentials(into profile: inout HostProfile) throws {
-        if username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && password.isEmpty {
+        let trimmedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        if username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && trimmedPassword.isEmpty {
             if let oldID = profile.basicAuth?.keychainPasswordID {
                 try hostCredentialAccess.delete(oldID)
             }
@@ -213,10 +214,13 @@ extension AppState {
             return
         }
         let passwordID = profile.basicAuth?.keychainPasswordID ?? Self.passwordKeychainID(for: profile.id)
-        if password.isEmpty {
+        if trimmedPassword.isEmpty {
             try hostCredentialAccess.delete(passwordID)
         } else {
-            try hostCredentialAccess.save(password, passwordID)
+            // Live finding (2026-10-13): a pasted password with surrounding
+            // whitespace is stored verbatim and then silently fails Basic
+            // Auth. Save the trimmed value.
+            try hostCredentialAccess.save(trimmedPassword, passwordID)
         }
         profile.basicAuth = BasicAuthConfig(username: username, keychainPasswordID: passwordID)
     }
@@ -265,7 +269,8 @@ extension AppState {
     }
 
     func commitHostPassword(_ password: String, username: String, to profile: inout HostProfile) throws {
-        if username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && password.isEmpty {
+        let trimmedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        if username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && trimmedPassword.isEmpty {
             if let oldID = profile.basicAuth?.keychainPasswordID {
                 try hostCredentialAccess.delete(oldID)
             }
@@ -273,10 +278,10 @@ extension AppState {
             return
         }
         let passwordID = profile.basicAuth?.keychainPasswordID ?? Self.passwordKeychainID(for: profile.id)
-        if password.isEmpty {
+        if trimmedPassword.isEmpty {
             try hostCredentialAccess.delete(passwordID)
         } else {
-            try hostCredentialAccess.save(password, passwordID)
+            try hostCredentialAccess.save(trimmedPassword, passwordID)
         }
         profile.basicAuth = BasicAuthConfig(username: username, keychainPasswordID: passwordID)
     }

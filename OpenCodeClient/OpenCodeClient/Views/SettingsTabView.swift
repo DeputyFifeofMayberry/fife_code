@@ -48,11 +48,28 @@ struct SettingsTabView: View {
                     .accessibilityIdentifier("settings-test-connection")
 
                     if let diagnostic = state.connectionDiagnostic {
-                        DiagnosticSummaryView(diagnostic: diagnostic)
+                        DiagnosticSummaryView(
+                            diagnostic: diagnostic,
+                            hostURL: state.currentHostProfile?.serverURL,
+                            transportLabel: state.currentHostProfile?.transport.label
+                        )
                     } else if let error = state.connectionError {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
+                        HStack(alignment: .top) {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                            Spacer()
+                            CopyConnectionErrorButton {
+                                ConnectionDiagnostic.copyText(
+                                    message: error,
+                                    hostURL: state.currentHostProfile?.serverURL,
+                                    transportLabel: state.currentHostProfile?.transport.label,
+                                    phaseLabel: nil,
+                                    recoveryHint: nil,
+                                    timestamp: nil
+                                )
+                            }
+                        }
                     }
                 } header: {
                     Text(L10n.t(.hostCurrent))

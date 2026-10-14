@@ -46,7 +46,8 @@ struct ConnectionDiagnostic: Codable, Equatable {
     var timestamp: Date
 
     /// Clipboard text for the copy-error button: the message plus the
-    /// connection context needed to debug it remotely.
+    /// connection context needed to debug it remotely. Absent pieces are
+    /// omitted entirely so the text never contains empty labeled lines.
     static func copyText(
         message: String,
         hostURL: String?,
@@ -55,7 +56,21 @@ struct ConnectionDiagnostic: Codable, Equatable {
         recoveryHint: String?,
         timestamp: Date?
     ) -> String {
-        "" // RED stub: implemented in the GREEN commit
+        var lines = [message]
+        if let hostURL {
+            let transport = transportLabel.map { " (\($0))" } ?? ""
+            lines.append("Host: \(hostURL)\(transport)")
+        }
+        if let phaseLabel {
+            lines.append("Phase: \(phaseLabel)")
+        }
+        if let recoveryHint {
+            lines.append("Hint: \(recoveryHint)")
+        }
+        if let timestamp {
+            lines.append("Time: \(ISO8601DateFormatter().string(from: timestamp))")
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
