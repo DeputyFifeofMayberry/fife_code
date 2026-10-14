@@ -56,7 +56,7 @@ final class CarModeUITests: XCTestCase {
             found = toggle.waitForExistence(timeout: 1.5)
             scrolled += 1
         }
-        XCTAssertTrue(found && toggle.exists, "settings-car-mode-toggle 应滚动进视口")
+        XCTAssertTrue(found && toggle.exists, "settings-car-mode-toggle should scroll into the viewport")
         XCTAssertTrue(app.staticTexts["Experimental Features"].exists)
         XCTAssertTrue(app.staticTexts["AI Usage Dashboard"].exists)
 

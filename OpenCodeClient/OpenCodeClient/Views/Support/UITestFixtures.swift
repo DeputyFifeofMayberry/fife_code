@@ -146,7 +146,6 @@ enum UITestFixtures {
         deepLinkHydratesSelection: Bool = true,
         hostCredentialAccess: HostCredentialAccess = .noExternal
     ) -> AppState {
-        L10n.useEphemeralLanguage(.en)
         let defaults = isolatedDefaults(label: label)
         return AppState(
             apiClient: apiClient,
@@ -164,9 +163,6 @@ enum UITestFixtures {
     }
 
     static func makeInitialState() -> AppState {
-        if isUITestLaunch {
-            L10n.useEphemeralLanguage(.en)
-        }
         if TurnStabilityFixture.isActive {
             let state = TurnStabilityFixture.makeAppState()
             TurnStabilityFixture.apply(to: state)

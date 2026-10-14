@@ -812,7 +812,7 @@ private struct ThinkingCard<Content: View>: View {
             .accessibilityLabel(L10n.t(.chatThinkingCard))
             .accessibilityIdentifier("message-thinking-card")
             .accessibilityAddTraits(.isButton)
-            .accessibilityValue(expanded ? "已展开" : "已收起")
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
 
             if expanded {
                 content
@@ -853,7 +853,7 @@ private struct ToolCallsRowView: View {
             .accessibilityLabel(L10n.toolCallsCount(parts.count))
             .accessibilityIdentifier("toolcard.toolcalls")
             .accessibilityAddTraits(.isButton)
-            .accessibilityValue(expanded ? "已展开" : "已收起")
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
 
             if expanded {
                 VStack(alignment: .leading, spacing: DesignSpacing.sm) {

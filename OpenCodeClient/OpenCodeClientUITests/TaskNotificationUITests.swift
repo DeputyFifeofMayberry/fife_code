@@ -18,30 +18,30 @@ final class TaskNotificationUITests: XCTestCase {
         app.launch()
 
         let card = app.descendants(matching: .any)["task-notification-card"]
-        XCTAssertTrue(card.waitForExistence(timeout: 12), "task-notification-card 应渲染")
+        XCTAssertTrue(card.waitForExistence(timeout: 12), "task-notification-card should render")
 
         let marker = NSPredicate(format: "label CONTAINS 'failing tests remain'")
         let markerBefore = app.staticTexts.containing(marker).count
         let openButton = app.descendants(matching: .any)["task-notification-open-session"]
-        XCTAssertFalse(openButton.exists, "折叠态不应露出跳转按钮")
+        XCTAssertFalse(openButton.exists, "The open-session button should not be exposed while collapsed")
 
         card.tap()
 
         let revealed = app.staticTexts.containing(marker).firstMatch.waitForExistence(timeout: 6)
             || app.staticTexts.containing(marker).count > markerBefore
-        XCTAssertTrue(revealed, "展开后应显示结果 markdown")
+        XCTAssertTrue(revealed, "Result markdown should be shown after expanding")
         if !openButton.waitForExistence(timeout: 2) {
             for _ in 0..<4 where !openButton.exists {
                 app.swipeUp()
             }
         }
-        XCTAssertTrue(openButton.waitForExistence(timeout: 4), "展开后应出现跳转按钮")
+        XCTAssertTrue(openButton.waitForExistence(timeout: 4), "The open-session button should appear after expanding")
 
         openButton.tap()
 
         let childTitle = app.descendants(matching: .any).containing(
             NSPredicate(format: "label CONTAINS '(@general subagent)'")
         ).firstMatch
-        XCTAssertTrue(childTitle.waitForExistence(timeout: 8), "跳转后应切到子代理会话")
+        XCTAssertTrue(childTitle.waitForExistence(timeout: 8), "Should switch to the subagent session after tapping open")
     }
 }

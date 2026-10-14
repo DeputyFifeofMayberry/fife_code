@@ -494,14 +494,14 @@ struct ComposerImageAttachment: Identifiable, Equatable {
 /// Part.state can be String (simple) or object (ToolState with status/title/input/output)
 struct PartStateBridge: Codable {
     let displayString: String
-    /// 调用的理由/描述，来自 state.title 或 state.metadata.description
+    /// Reason/description of the call, from state.title or state.metadata.description
     let title: String?
-    /// 命令/输入，来自 state.input 或 state.metadata
+    /// Command/input, from state.input or state.metadata
     let inputSummary: String?
-    /// 输出结果，来自 state.output 或 state.metadata.output
+    /// Output result, from state.output or state.metadata.output
     let output: String?
     let error: String?
-    /// 文件路径，来自 state.input.path/file_path/filePath 或 patchText 中的 *** Add File: / *** Update File:
+    /// File path, from state.input.path/file_path/filePath or from *** Add File: / *** Update File: in patchText
     let pathFromInput: String?
 
     /// Tool execution bounds from state.time, in epoch milliseconds. Present
@@ -784,14 +784,14 @@ nonisolated struct Part: Codable, Identifiable {
 
     /// For UI display; handles both string and object state
     var stateDisplay: String? { state?.displayString }
-    /// 调用的理由/描述（用于 tool label）
+    /// Reason/description of the call (used for the tool label)
     var toolReason: String? { state?.title }
-    /// 命令/输入摘要
+    /// Command/input summary
     var toolInputSummary: String? { state?.inputSummary }
     var toolInputSummaryForDisplay: String? {
         toolInputSummary.map(DisplayTextDecoder.decodeJSONUnicodeEscapes)
     }
-    /// 输出结果
+    /// Output result
     var toolOutput: String? { state?.output }
     var toolError: String? { state?.error }
     var toolOutputForDisplay: String? {
@@ -916,7 +916,7 @@ nonisolated struct Part: Codable, Identifiable {
     var isFile: Bool { type == "file" }
     var isImageAttachment: Bool { isFile && (mime?.hasPrefix("image/") ?? false) }
 
-    /// 可跳转的文件路径列表：来自 files 数组、metadata.path、或 state.input 中的 path/patchText 解析
+    /// List of navigable file paths: from the files array, metadata.path, or parsed from path/patchText in state.input
     var filePathsForNavigation: [String] {
         var out: [String] = []
         if let files = files {

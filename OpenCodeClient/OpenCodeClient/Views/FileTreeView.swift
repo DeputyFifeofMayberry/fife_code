@@ -13,7 +13,7 @@ struct FileTreeView: View {
     /// Force iPad split behavior (preview in middle column instead of push).
     var forceSplitPreview: Bool = false
 
-    /// iPad 分栏：点击文件更新预览栏；iPhone：在 Files Tab 内 push
+    /// iPad split layout: tapping a file updates the preview column; iPhone: push within the Files tab
     private var useSplitPreview: Bool {
         forceSplitPreview || sizeClass == .regular
     }

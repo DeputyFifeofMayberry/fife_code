@@ -3,8 +3,8 @@ import XCTest
 enum Tier4DriverSupport {
     static let phaseIdentifier = "host-connection-phase"
     static let userMessagePrefix = "user-message-"
-    static let connectedValues = ["Connected", "已连接"]
-    static let failedValues = ["Connection failed", "连接失败"]
+    static let connectedValues = ["Connected"]
+    static let failedValues = ["Connection failed"]
 
     @MainActor
     static func configureSavedHost(
@@ -64,7 +64,7 @@ enum Tier4DriverSupport {
             XCTAssertTrue(passwordPrompt.waitForNonExistence(timeout: 5))
         }
 
-        let back = navigationButton(in: app, labels: ["Settings", "设置", "Back", "返回"])
+        let back = navigationButton(in: app, labels: ["Settings", "Back", "返回"])
         XCTAssertTrue(back.waitForExistence(timeout: 8), "Hosts should expose its Settings back button: \(app.debugDescription)")
         let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: back)
         XCTAssertEqual(XCTWaiter().wait(for: [hittable], timeout: 8), .completed, "Settings back button should be hittable: \(app.debugDescription)")
@@ -82,14 +82,14 @@ enum Tier4DriverSupport {
     @MainActor
     static func openSettings(in app: XCUIApplication) {
         if app.descendants(matching: .any)["settings-current-host"].exists { return }
-        openSemanticTab(in: app, labels: ["Settings", "设置"], fallbackIdentifier: "ipad-settings-button")
+        openSemanticTab(in: app, labels: ["Settings"], fallbackIdentifier: "ipad-settings-button")
         XCTAssertTrue(app.descendants(matching: .any)["settings-current-host"].waitForExistence(timeout: 15), "settings tab should open")
     }
 
     @MainActor
     static func openChat(in app: XCUIApplication) {
         if app.descendants(matching: .any)["chat-input"].exists { return }
-        openSemanticTab(in: app, labels: ["Chat", "聊天"], fallbackIdentifier: nil)
+        openSemanticTab(in: app, labels: ["Chat"], fallbackIdentifier: nil)
         XCTAssertTrue(app.descendants(matching: .any)["chat-input"].waitForExistence(timeout: 20), "chat tab should open")
     }
 
