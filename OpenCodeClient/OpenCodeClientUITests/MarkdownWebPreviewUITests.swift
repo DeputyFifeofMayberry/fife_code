@@ -31,7 +31,7 @@ final class MarkdownWebPreviewUITests: XCTestCase {
     /// Webview present + a sentinel for the chosen fixture.
     private func assertWebViewVisible(_ app: XCUIApplication, file: StaticString = #file, line: UInt = #line) {
         let webView = app.webViews.firstMatch
-        XCTAssertTrue(webView.waitForExistence(timeout: 12), "WKWebView 应出现", file: file, line: line)
+        XCTAssertTrue(webView.waitForExistence(timeout: 12), "WKWebView should appear", file: file, line: line)
     }
 
     private func capture(_ app: XCUIApplication, named name: String) throws {
@@ -82,7 +82,7 @@ final class MarkdownWebPreviewUITests: XCTestCase {
         let app = launchWebPreview(fixture: "math_formulas", dark: false)
         assertWebViewVisible(app)
         let sentinel = app.webViews.firstMatch.staticTexts["MATH_FORMULA_SENTINEL"]
-        XCTAssertTrue(sentinel.waitForExistence(timeout: 12), "Math fixture 应完成渲染")
+        XCTAssertTrue(sentinel.waitForExistence(timeout: 12), "Math fixture should finish rendering")
         try capture(app, named: "web_preview_math_formulas_light")
     }
 
@@ -91,7 +91,7 @@ final class MarkdownWebPreviewUITests: XCTestCase {
         let app = launchWebPreview(fixture: "math_formulas", dark: true)
         assertWebViewVisible(app)
         let sentinel = app.webViews.firstMatch.staticTexts["MATH_FORMULA_SENTINEL"]
-        XCTAssertTrue(sentinel.waitForExistence(timeout: 12), "Dark math fixture 应完成渲染")
+        XCTAssertTrue(sentinel.waitForExistence(timeout: 12), "Dark math fixture should finish rendering")
         try capture(app, named: "web_preview_math_formulas_dark")
     }
 
@@ -106,7 +106,7 @@ final class MarkdownWebPreviewUITests: XCTestCase {
         let sentinel = webView.staticTexts["SECURITY_FIXTURE_SENTINEL_OK"]
         XCTAssertTrue(
             sentinel.waitForExistence(timeout: 12),
-            "安全 fixture 的 sentinel 文本应渲染（页面已加载且 sanitizer 未破坏内容）"
+            "Security fixture sentinel text should render (page loaded and the sanitizer did not break the content)"
         )
         // If a script had executed and thrown, the webview would not be stable
         // enough to surface the sentinel; reaching here means script was stripped.
@@ -125,7 +125,7 @@ final class MarkdownWebPreviewUITests: XCTestCase {
         for sentinel in ["CHIP_OK_SENTINEL", "CHIP_BAD_SENTINEL", "CHIP_WARN_SENTINEL", "CHIP_BLOCK_SENTINEL"] {
             XCTAssertTrue(
                 webView.staticTexts[sentinel].waitForExistence(timeout: 12),
-                "Dark 模式下 \(sentinel) 应可见 — 若失败说明 chip 文字被卡片 --fg 覆盖或 --*-bg 与卡片底太接近"
+                "\(sentinel) should be visible in dark mode; failure means chip text is overridden by the card --fg or --*-bg is too close to the card background"
             )
         }
         try capture(app, named: "web_preview_semantic_chips_dark")
@@ -142,7 +142,7 @@ final class MarkdownWebPreviewUITests: XCTestCase {
         for sentinel in ["CHIP_OK_SENTINEL", "CHIP_BAD_SENTINEL", "CHIP_WARN_SENTINEL", "CHIP_BLOCK_SENTINEL"] {
             XCTAssertTrue(
                 webView.staticTexts[sentinel].waitForExistence(timeout: 12),
-                "Light 模式下 \(sentinel) 应可见"
+                "\(sentinel) should be visible in light mode"
             )
         }
         try capture(app, named: "web_preview_semantic_chips_light")
@@ -160,11 +160,11 @@ final class MarkdownWebPreviewUITests: XCTestCase {
         // Starts in Web mode.
         XCTAssertTrue(
             app.webViews.firstMatch.waitForExistence(timeout: 12),
-            "Web Preview WKWebView 应为初始模式"
+            "Web Preview WKWebView should be the initial mode"
         )
 
         let menu = app.buttons["markdown-preview-mode-menu"]
-        XCTAssertTrue(menu.waitForExistence(timeout: 8), "Preview mode 菜单应存在")
+        XCTAssertTrue(menu.waitForExistence(timeout: 8), "Preview mode menu should exist")
 
         // Switch to Markdown Source.
         menu.tap()
@@ -172,7 +172,7 @@ final class MarkdownWebPreviewUITests: XCTestCase {
         XCTAssertTrue(
             app.otherElements["fixture-source-view"].waitForExistence(timeout: 8)
                 || app.scrollViews["fixture-source-view"].waitForExistence(timeout: 8),
-            "切到 Source 后源码视图应出现"
+            "Source view should appear after switching to Source"
         )
 
         // Switch to Native Preview.
@@ -181,7 +181,7 @@ final class MarkdownWebPreviewUITests: XCTestCase {
         XCTAssertTrue(
             app.otherElements["fixture-native-preview"].waitForExistence(timeout: 8)
                 || app.scrollViews["fixture-native-preview"].waitForExistence(timeout: 8),
-            "切到 Native 后原生预览应出现"
+            "Native preview should appear after switching to Native"
         )
 
         // Back to Web.
@@ -189,7 +189,7 @@ final class MarkdownWebPreviewUITests: XCTestCase {
         app.buttons["Web Preview"].tap()
         XCTAssertTrue(
             app.webViews.firstMatch.waitForExistence(timeout: 8),
-            "切回 Web 后 WKWebView 应再次出现"
+            "WKWebView should appear again after switching back to Web"
         )
     }
 }

@@ -397,7 +397,7 @@ struct ChatTabView: View {
         state.isCurrentSessionHistoryTruncated || state.isLoadingOlderMessagesInCurrentSession
     }
 
-    /// 合并同一 assistant turn 的连续 step-only 消息，使 tool 卡片在一个 grid 内连续显示
+    /// Merge consecutive step-only messages from the same assistant turn so tool cards appear together in one grid
     private var messageGroups: [MessageGroupItem] {
         MessageGroupItem.grouped(
             AppState.visibleMessages(
@@ -1351,9 +1351,10 @@ struct ChatTabView: View {
         }
     }
 
-    /// 内容变化时用于触发自动滚动。签名含最后一条消息的累计文本长度：流式
-    /// delta 只增长既有 part 的 text（parts.count 不变），没有这一项，长文本
-    /// 回复期间 onChange 永不触发，视图不再跟随到底部。
+    /// Used to trigger auto-scroll when content changes. The fingerprint includes the accumulated
+    /// text length of the last message: streaming deltas only grow the text of an existing part
+    /// (parts.count stays the same), so without this item onChange never fires during a long text
+    /// reply and the view stops following the bottom.
     private var scrollAnchor: String {
         let lastMessage = state.messages.last.map { message in
             ChatScrollBehavior.LastMessageFingerprint(

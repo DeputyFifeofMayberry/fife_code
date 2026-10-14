@@ -1,255 +1,255 @@
 # Lessons — OpenCode iOS Client
 
-> 从实现与 Code Review 过程中总结的可复用经验
+> Reusable lessons distilled from implementation and code review work
 
-## 0. 变更工作流：先对齐文档，再改代码
+## 0. Change workflow: align the docs first, then change the code
 
-一套稳定且可复用的工程工作流（尤其适合本项目这种「PRD/RFC 驱动 + 快速迭代」的协作模式）：
+A stable, reusable engineering workflow, especially suited to this project's PRD/RFC-driven, fast-iterating collaboration style:
 
-1. **先判断 PRD 是否受影响**：只要改动涉及产品行为、交互逻辑或功能范围（哪怕只是微调 iPad UI），都要优先更新 `docs/OpenCode_iOS_Client_PRD.md`。
-2. **再判断 RFC 是否受影响**：若改动改变了技术方案、架构约束或开发分期，同步更新 `docs/OpenCode_iOS_Client_RFC.md`。
-3. **按文档实现代码**：严格依照既定文档编码，实现过程中的方案修正也要及时回写到文档。
-4. **补齐测试用例**：适合单测的业务逻辑尽量通过单元测试防范回归；UI 层面的变更至少要覆盖关键的纯逻辑测试与模型解码测试。
-5. **确保编译与测试全绿**：最后依次执行 `xcodebuild build` 与 `xcodebuild test`，确认主流程无回归。
+1. **Decide first whether the PRD is affected**: any change that touches product behavior, interaction logic, or feature scope (even a minor iPad UI tweak) starts with updating `docs/OpenCode_iOS_Client_PRD.md`.
+2. **Then decide whether the RFC is affected**: if the change alters the technical approach, architecture constraints, or delivery phases, update `docs/OpenCode_iOS_Client_RFC.md` at the same time.
+3. **Implement code against the docs**: code strictly according to the established documents, and write any design corrections made along the way back into the docs promptly.
+4. **Fill in test coverage**: guard business logic that suits unit testing against regressions with unit tests; for UI-level changes, at least cover the key pure-logic tests and model decoding tests.
+5. **Make sure build and tests are green**: finish by running `xcodebuild build` and then `xcodebuild test`, and confirm the main flows have no regressions.
 
-Lesson：把决策背后的“为什么”沉淀在 PRD/RFC 中，代码只需专注“怎么做”。这样无论是 Code Review、问题回溯还是后续迭代，沟通和维护成本都会大幅降低。
+Lesson: record the "why" behind decisions in the PRD/RFC, and let the code focus on the "how". This cuts communication and maintenance cost by a large margin, whether for code review, tracing problems, or later iterations.
 
-## 1. 直接验证 API，而非先写代码再猜
+## 1. Verify the API directly instead of writing code first and guessing
 
-**场景**：调研 SSE 事件格式时，需要明确 OpenCode `/global/event` 的实际响应数据结构。
+**Scenario**: while investigating the SSE event format, we needed to pin down the actual response data structure of OpenCode `/global/event`.
 
-**反模式**：先做主观假设并编写解析代码，再运行 iOS 客户端从日志中反推响应格式。
+**Antipattern**: make subjective assumptions and write parsing code first, then run the iOS client and reverse-engineer the response format from logs.
 
-**正确做法**：直接用 `curl` 等命令行工具连上服务端实测。例如：
+**Correct approach**: connect straight to the server and measure with a command line tool such as `curl`. For example:
 
 ```bash
 curl -s -N -H "Accept: text/event-stream" "http://192.168.180.128:4096/global/event"
 ```
 
-当场就能确认实际输出为 `data: {"payload":{"type":"server.connected","properties":{}}}`，直观验证其为单行 JSON。
+This immediately confirms the actual output is `data: {"payload":{"type":"server.connected","properties":{}}}`, which shows directly that it is single-line JSON.
 
-**Lesson**：对接或调研外部 API 时，务必优先通过抓包或命令行实测。用真实响应代替主观假设，能省下大量无效编码与调试成本。
-
----
-
-## 2. 测试优先、小步快跑
-
-**场景**：对 AppState 模块拆分、抽取 PathNormalizer 以及 Session 过滤等核心逻辑进行重构。
-
-**做法**：
-- 拆分前先补齐关键路径的测试用例，覆盖核心业务逻辑。
-- 先通过测试明确预期行为，再动手调整代码结构。
-- 每完成一个独立子任务就及时 commit，并同步更新 `WORKING.md`。
-
-**Lesson**：完善的测试是用例重构的安全网；小步提交则能让代码审查更清晰，遇到问题也更易回滚。
+**Lesson**: when integrating or investigating an external API, always capture traffic or test from the command line first. Replacing subjective assumptions with real responses saves a large amount of wasted coding and debugging.
 
 ---
 
-## 3. 用 Task List 组织任务，保证不重复、无遗漏
+## 2. Tests first, small fast steps
 
-**场景**：处理 Code Review 1.1–1.4 期间涉及多项交叉任务，包括补充测试、模块拆分、SSE 处理、Session 过滤以及 PathNormalizer 抽取等。
+**Scenario**: refactoring core logic such as splitting the AppState module, extracting PathNormalizer, and session filtering.
 
-**做法**：建立结构化的任务清单进行全流程跟踪，每推进一项便勾选归档，杜绝遗漏与重复开发。
+**Approach**:
+- Before splitting, add test cases for the key paths so the core business logic is covered.
+- Use tests to pin down the expected behavior first, then start adjusting the code structure.
+- Commit promptly after each independent subtask and update `WORKING.md` at the same time.
 
-**Lesson**：把复杂的多目标任务拆解为可量化追踪的 Checklist，能有效避免“做着做着漏了关键点”的被动局面。
-
----
-
-## 4. API 实测 vs 规范假设
-
-**场景**：标准 SSE 规范包含多行 data、`event:` 字段以及注释保活（comment keep-alive）等机制，Code Review 时建议全面兼容标准规范。
-
-**做法**：通过抓包实测服务端的真实行为，确认其仅推送单行 `data:`。现有精简实现完全满足业务需求，暂无过度封装的必要。
-
-**Lesson**：理论规范与实际系统实现往往存在差距；在动手前先验证真实数据流，把精力用在刀刃上，避免过早过度设计。
+**Lesson**: thorough tests are the safety net for refactoring, and small commits keep code review clearer and make rollback easier when problems appear.
 
 ---
 
-## 5. 拆分时保持对外 API 不变
+## 3. Organize work with a task list so nothing is duplicated or dropped
 
-**场景**：将庞大的 AppState 重构拆分为 SessionStore、MessageStore、FileStore 和 TodoStore 等专职 Store。
+**Scenario**: Code Review 1.1–1.4 involved many interleaved tasks, including adding tests, splitting modules, SSE handling, session filtering, and extracting PathNormalizer.
 
-**做法**：在 AppState 上通过计算属性进行转发委托，完整保留 `state.messages`、`state.sessions` 等既有 API，使上层 View 保持零改动。
+**Approach**: keep a structured task list to track the whole effort, and check off and archive each item as it advances, preventing omissions and duplicate work.
 
-**Lesson**：系统内部重构应尽量维持上层公共接口的稳定性，收敛代码改动面，从而将回归风险降到最低。
-
----
-
-## 6. 多 Session 场景下的 SSE 过滤
-
-**场景**：在多 Session 并发场景下，收到的 `message.updated` 事件若未按 sessionID 进行校验过滤，会导致跨会话的数据污染。
-
-**做法**：在事件分发层严格提取事件 payload 中的 `sessionID` 进行判定，只对当前激活会话的数据进行响应与更新。
-
-**Lesson**：在多会话或类似多租户架构中，事件必须携带唯一的作用域标识（如 Session 或 Tenant ID），客户端也必须在消费前做好精确过滤。
+**Lesson**: breaking a complex multi-goal effort into a countable, trackable checklist effectively avoids the situation of dropping a key point halfway through.
 
 ---
 
-## 7. 跨模块逻辑集中到统一层
+## 4. Measured API behavior vs spec assumptions
 
-**场景**：路径规范化逻辑原先零散分布在 Message.swift 和各处视图的字符串裁剪逻辑中，容易产生标准分歧。
+**Scenario**: the standard SSE spec includes mechanisms such as multi-line data, `event:` fields, and comment keep-alives, and code review suggested fully supporting the standard.
 
-**做法**：将所有路径处理统一收敛到 `PathNormalizer` 工具类中，集中解析并处理 a/b 前缀、锚点 `#` 以及 `:line:col` 行列号等格式。
+**Approach**: capture traffic to measure the server's real behavior and confirm it only pushes single-line `data:`. The existing lean implementation fully satisfies the business need, so there is no reason to over-wrap it for now.
 
-**Lesson**：凡是涉及跨模块的通用规则或数据清洗逻辑，都应收拢到单一职责层统一维护，避免分散实现带来的冗余与行为不一致。
-
----
-
-## 8. @MainActor 与 test 可测性
-
-**场景**：`shouldProcessMessageEvent` 原本声明在 AppState 内部，在单元测试中直接调用时会触发主线程隔离报错（main actor-isolated）。
-
-**做法**：将无状态的纯逻辑方法显式标记为 `nonisolated`，使其能在测试上下文中被同步直接调用。
-
-**Lesson**：需要单元测试覆盖的纯计算或判断逻辑，应尽量抽成 nonisolated 或静态方法，解除与 MainActor 生命周期及并发环境的不必要耦合。
+**Lesson**: theoretical specs and real system implementations often diverge. Verify the real data flow before building, spend the effort where it matters, and avoid premature over-design.
 
 ---
 
-## 9. SSE-first 不等于“只靠 SSE”，要配一次性补偿同步
+## 5. Keep the external API unchanged when splitting
 
-**场景**：iOS 应用在发生前后台切换、网络抖动、切换会话或断线重连时，都有可能丢失处于空窗期的 SSE 事件。
+**Scenario**: splitting the huge AppState into dedicated stores such as SessionStore, MessageStore, FileStore, and TodoStore.
 
-**做法**：
-- 正常状态下完全依赖 SSE 推送增量，避免常驻高频轮询消耗资源。
-- 在关键生命周期节点（如 SSE 重连成功、用户切入会话时）触发一次轻量全量对账（bootstrap）：执行 `loadMessages + refreshPendingPermissions`。
-- 完善 bootstrap 的触发上下文日志，记录触发原因（reason）、耗时（elapsed）、消息数（messages）及权限项（permissions）。
+**Approach**: forward through computed properties on AppState, fully preserving existing APIs such as `state.messages` and `state.sessions`, so the views above need zero changes.
 
-**Lesson**：移动端实时通信应当采用“增量事件为主通道 + 关键节点全量对账补偿”的协同设计，在兼顾系统稳定性的同时保持低功耗。
+**Lesson**: internal refactoring should keep the public interfaces above as stable as possible and narrow the surface of code changes, which minimizes regression risk.
 
 ---
 
-## 10. SSH 安全默认值：TOFU + mismatch hard fail
+## 6. SSE filtering with multiple sessions
 
-**场景**：SSH 隧道如果直接配置 `acceptAnything`，实际上完全放弃了远端主机的身份验证。
+**Scenario**: with multiple concurrent sessions, an incoming `message.updated` event that is not validated and filtered by sessionID pollutes data across sessions.
 
-**做法**：
-- 首次建立连接：采用 TOFU（Trust On First Use）机制，按 host:port 维度持久化记录 host key。
-- 后续再次连接：一旦校验到公钥指纹不一致，立即阻断连接（hard fail）并向用户明确提示中间人攻击（MITM）或主机重装风险。
-- UI 层面提供指纹详情展示，以及重置受信任主机（reset trusted host）的操作入口。
+**Approach**: at the event dispatch layer, strictly extract the `sessionID` from the event payload for the decision, and only respond to and update data for the currently active session.
 
-**Lesson**：涉及远程通信的功能上线时，安全基线必须同步落地；“跑通连接”只是第一步，“建立可信通道”才是交付的合格标准。
+**Lesson**: in multi-session or similar multi-tenant architectures, events must carry a unique scope identifier (such as a Session or Tenant ID), and the client must filter precisely before consuming them.
 
 ---
 
-## 11. 复杂重构采用 Gate 式 Test-First
+## 7. Consolidate cross-module logic into a single layer
 
-**场景**：对 AppState 进行深层次拆分涉及状态机迁移、SSE 分发和 UI 刷新规则等多条链路，回归风险极高。
+**Scenario**: path normalization logic used to be scattered across Message.swift and string-trimming code in various views, which easily produced diverging standards.
 
-**做法**：
-- 按 Iteration A/B/C/D 拆解为多个渐进迭代轮次，每轮均严格遵循“先补齐行为测试，再改造代码结构”的原则。
-- 为每一轮次设立明确的验收关卡（Gate，例如行为测试全量通过），达标后方可推进至下一轮。
-- 每个轮次完成后在 `WORKING.md` 中做详实记录，清楚列出新增测试点与风险评估结论。
+**Approach**: pull all path handling into the `PathNormalizer` utility, which centrally parses and handles formats such as a/b prefixes, `#` anchors, and `:line:col` line and column numbers.
 
-**Lesson**：复杂重构切忌一蹴而就的大面积修改，而应拆解为可验证的增量迁移；用客观的测试关卡把关，远比主观经验和直觉更可信。
+**Lesson**: any cross-module general rules or data-cleaning logic should be gathered into a single-responsibility layer and maintained there, avoiding the redundancy and inconsistent behavior that scattered implementations bring.
 
 ---
 
-## 12. Activity 文案要有“防抖语义”，而不是盲目实时
+## 8. @MainActor and testability
 
-**场景**：在工具调用（tool）与模型思考（reasoning）过程中，文案的高频变动会导致界面剧烈抖动，带来严重的视觉噪音。
+**Scenario**: `shouldProcessMessageEvent` was originally declared inside AppState, and calling it directly in unit tests triggered a main actor isolation error (main actor-isolated).
 
-**做法**：
-- 将文案状态的推导与防抖（debounce）逻辑统一收拢到底层逻辑层处理。
-- 制定清晰的刷新规则：在 2.5s 时间窗口内的变动采用延迟平滑更新，超出窗口后则立即生效。
-- 明确 completed 与 running 状态下耗时数据的计算优先级，避免展示误导性的伪精确数值。
+**Approach**: explicitly mark the stateless pure-logic method as `nonisolated` so it can be called synchronously and directly in a test context.
 
-**Lesson**：信息的可读性同样是实时交互体验的重要一环；对于用户而言，一套“稳定且可信”的状态呈现，远比“任何微小变动都立刻刷新”更有价值。
+**Lesson**: pure computation or decision logic that needs unit test coverage should be extracted into nonisolated or static methods where possible, removing the unnecessary coupling to the MainActor lifecycle and concurrency environment.
 
 ---
 
-## 13. SSH UX 需要把“用户下一步动作”写进界面
+## 9. SSE-first still needs a one-shot compensating sync alongside SSE
 
-**场景**：在配置 SSH 隧道时，用户容易陷入“已开启开关却无法连接，或不清楚下一步该在何处操作”的迷茫状态。
+**Scenario**: an iOS app can lose SSE events during the gap whenever it switches between foreground and background, the network jitters, the user switches sessions, or the connection drops and reconnects.
 
-**做法**：
-- 直接在界面生成可一键复制的完整 SSH 命令行，消除用户自行拼接命令的认知负担。
-- 将公钥复制入口设为常驻可见，解除其与开关启用状态的强行绑定。
-- 在 SSH 配置区域给出明确的操作指引：开启配置后需回到上方点击 `Test Connection` 完成联通性验证。
+**Approach**:
+- In the normal state, rely fully on SSE pushes for increments and avoid always-on high-frequency polling that consumes resources.
+- At key lifecycle points (such as a successful SSE reconnect or the user entering a session), trigger one lightweight full reconciliation (bootstrap): run `loadMessages + refreshPendingPermissions`.
+- Flesh out the bootstrap trigger-context logging to record the reason, elapsed time, message count, and permission items.
 
-**Lesson**：配置类界面的核心价值不仅在于字段完备，更在于能否引导用户顺畅完成全流程。直接在 UI 文案中写明明确的“下一步行动”，能大幅降低交互摩擦。
-
----
-
-## 14. 长会话弱网优化优先做“消息分页”，不是先重做渲染
-
-**场景**：完成视图渲染优化后，局域网（LAN）环境下的交互已足够流畅，但在跨公网（WAN）或通过 SSH 隧道访问长会话时，首屏加载依然存在明显延迟。
-
-**做法**：
-- 先验证后端支持 `GET /session/:id/message?limit=` 接口，随后在客户端将初次加载策略调整为默认仅拉取最近 3 轮交互（即 6 条 message）。
-- 提供明确的“下拉加载更多历史消息”交互机制，每次按固定步长（+6）向前回溯加载。
-- 对分页提示文案与加载状态做好本地化处理，避免用户产生“旧数据丢失”的误解。
-
-**Lesson**：在弱网与高时延链路上，首屏加载的瓶颈往往在于数据传输体积与网络往返开销（RTT）。先落地受控的消息分页，通常比在 View 渲染层深挖微调能带来更显著、更稳定的性能收益。
+**Lesson**: mobile realtime communication should combine incremental events as the main channel with full reconciliation at key points as compensation, keeping power low while preserving system stability.
 
 ---
 
-## 15. 先澄清 message 语义，再做 limit 策略
+## 10. SSH security defaults: TOFU + mismatch hard fail
 
-**场景**：讨论消息截断时常会遇到口径疑问：“一个模型交互中包含 10 次工具调用（tool）与 1 次最终回答，整体算作 11 条 message 还是 1 条 message？”
+**Scenario**: configuring `acceptAnything` on an SSH tunnel effectively gives up all authentication of the remote host.
 
-**做法**：
-- 与服务端底层数据模型严格对齐：每次 tool 调用均为 message 下属的一个 `part`，而非独立的 `message` 实体。
-- 明确分页参数 `limit` 控制的是顶层 message 条数，而非 tool 调用的粒度。
-- 在 PRD 与 RFC 等规范文档中统一该定义，消除后续对于“3 轮会话对应 6 条 message”的理解偏差。
+**Approach**:
+- On first connection: use TOFU (Trust On First Use) and persist the host key per host:port.
+- On later connections: as soon as the public key fingerprint mismatches, block the connection immediately (hard fail) and clearly warn the user about a possible MITM attack or host reinstall.
+- In the UI, show fingerprint details and provide an entry point for resetting the trusted host.
 
-**Lesson**：在设计分页与截断策略前，必须先理清并统一底层数据实体的计数口径。否则产品与技术讨论很容易在“视觉呈现是一条还是逻辑数据有多条”的歧义上反复内耗。
-
----
-
-## 16. Session 与 Project：创建仅限 Server default
-
-**场景**：在 iOS 客户端新建会话后，点击会话列表或将应用切到后台再返回前台时，刚刚创建的新 Session 发生异常消失。
-
-**根因**：服务端的 `POST /session` 接口并不支持传入 `directory` 参数，Session 始终创建在服务端的当前默认 Project（由 CLI 启动路径或 Web/TUI 的最后操作决定）下。iOS 端的 Project 切换器本质上只影响 `GET /session?directory=X` 的列表过滤，无法改变新会话的实际创建位置。当用户在客户端选中的 Project 与服务端默认 Project 不一致时，新建的 Session 会落入服务端默认 Project 中，因而无法在当前过滤列表中展示，刷新后便直接“消失”。
-
-**做过的尝试**：
-1. **mergeCurrentSessionIfMissing**：在 `loadSessions` 时若当前会话不在列表中，单独请求该 Session 并强行 prepend 到列表前端 → 治标不治本，且 `GET /session/:id` 跨 Project 查询时可能直接返回 404。
-2. **session.updated 按 project 过滤**：防止其他 Project 的 Session 变动事件混入当前列表 → 属于合理设计，予以保留。
-3. **Settings 警告 + 引导去 Web 切换** → 方案不成立：Web 端同样无法远程更改服务端的 working directory。
-4. **移除 Project 选择（回滚）** → 未采纳：保留多 Project 的列表过滤能力依然有实用价值。
-
-**最终做法**：仅在选择 Server default 时开放新建会话入口。当用户切换到特定 Project 时，新建按钮自动置灰禁用，并在旁边展示 info 提示图标，点击后弹出说明：如需在其他目录下创建会话，需在终端通过命令行携带目标工作目录启动 OpenCode，随后在客户端切回 Server default 即可正常创建。
-
-**Lesson**：在多 Project 体系中，若底层 API 尚不支持在创建时指定工作目录，应在交互层面对创建入口施加约束，而非在数据层做脆弱的事后弥补；要清晰解耦“列表过滤”与“会话创建”的语义边界，避免给用户留下“只要筛选了某个 Project 就能在此创建”的错误心智模型。
+**Lesson**: when a remote communication feature ships, its security baseline must land with it. Getting a connection through is only the first step; a trusted channel is the delivery bar.
 
 ---
 
-## 17. 相对路径规范化不能“删掉 ..”，必须真正折叠
+## 11. Gate-style test-first for complex refactoring
 
-**场景**：在 iOS 客户端的 Markdown 预览中查看 `docs/reports/*.md` 等深层文档时，文中通过相对路径引用的图片（如 `![x](../assets/foo.png)`）无法正常加载显示，而文本排版完全正常。
+**Scenario**: deeply splitting AppState touches multiple chains, including state machine transitions, SSE dispatch, and UI refresh rules, so the regression risk is very high.
 
-**根因**：`MarkdownImageResolver` 会先将文档所在目录与相对路径拼接为 `docs/reports/../assets/foo.png`，再交由 `PathNormalizer.resolveWorkspaceRelativePath(...)` 进行解析。原先的实现简单粗暴地过滤掉了路径中的 `.` 与 `..` 片段，未按照文件系统标准语义进行路径折叠，导致最终错误解析为 `docs/reports/assets/foo.png`，进而请求了一个并不存在的文件路径。
+**Approach**:
+- Break the work into progressive iteration rounds, Iteration A/B/C/D, each strictly following the principle of completing behavior tests first and then restructuring the code.
+- Set an explicit acceptance gate for each round (a gate such as all behavior tests passing) and only advance to the next round once it is met.
+- After each round, record it thoroughly in `WORKING.md`, clearly listing the new test points and the risk assessment conclusions.
 
-**最终做法**：从两层分别进行修复。第一层，将 `PathNormalizer.normalize()` 重构为基于栈（stack-based）的路径折叠算法：普通路径片段依次入栈，遇到 `.` 则跳过，遇到 `..` 则在栈非空时弹出栈顶元素。如此一来，`docs/reports/../assets/foo.png` 即可准确折叠为 `docs/assets/foo.png`，同时仍能有效防范越过 Workspace 根目录的路径穿越攻击。第二层，在 `FileContentView` 的 Markdown 预览层中，不再依赖 `MarkdownUI` 默认的网络图片加载器自行猜测相对路径，而是显式注入 `imageBaseURL` 与定制的 `WorkspaceMarkdownImageProvider`，统一通过 `state.loadFileContent` 读取 Workspace 内部的图片数据完成受控渲染。
-
-**Lesson**：相对路径的安全防范绝非简单“剔除危险字符”即可解决。对 `..` 的粗暴裁剪会直接破坏合法的相对路径层级，极易在文档图片渲染、Patch 关联跳转以及代码内相对引用等场景下引发隐蔽故障。此外，第三方 Markdown 渲染引擎默认的图片加载策略通常假定传入的是最终可用的网络 URL；若要可靠支持工程内部的相对路径资源，客户端就必须自主接管 Base URL 维护与定制化资源加载器，不能依赖默认网络加载器的隐式行为。
-
----
-
-## 18. 流式 reasoning parser 是一次性状态机：thinking 里的字面结束标签会永久提前终止 reasoning
-
-**场景**：SGLang `--reasoning-parser qwen3` 等流式解析器本质上是**一次性**状态机——在思考输出阶段只要检测到**第一个** `</think>`（无论出现在行内何处），状态机便会永久关闭 reasoning 模式，此后的所有流式块均会被当作普通正文直接透传。如果模型在思考内容中输出了字面意义上的 `</think>` 字符串（例如正在分析和讨论该标签本身），会导致思考流提前意外终结，随后的未完思考内容与真实的 `</think>` 标签将全部泄漏到正文内容流中。
-
-**做法**：在排查“思考过程泄漏至正文”的问题时，优先查阅 Serving 层的解析器实现源码，确认状态机的工作机制（包括是否属于单向触发、结束标签的具体匹配规则等），随后结合日志数据进行交叉核验：检查 reasoning part 是否在句子中途被强行截断，以及 text part 是否恰好紧接着上半句的内容继续输出。
-
-**Lesson**：分词器（Tokenizer）在底层无法分辨“将标签作为普通文本讨论”与“真正的思考结束标记”，这类歧义往往只能在客户端的归一化层统一消化。在着手排查前，必须先摸清 Serving 层 Parser 的状态机流转逻辑，避免在服务端业务层或模型训练层做无意义的排查。
+**Lesson**: complex refactoring should never be one sweeping change; break it into verifiable incremental migrations. Objective test gates are far more trustworthy than subjective experience and intuition.
 
 ---
 
-## 19. 客户端归一化是模型输出怪癖的正确修复层，且必须 fence-aware
+## 12. Activity text needs debounce semantics instead of blind realtime refresh
 
-**场景**：服务端通常对模型的原始输出保持原样存储与原样透传（输出中包含的多余空行、泄漏的思考标签属于模型自身的生成特征，并非服务端缺陷）；同一套数据在 Web 端和 Android 端经过各自的展示归一化后均能正常呈现。当某一端出现渲染异常时，根因往往在于该端缺少针对性的数据归一化逻辑，而非服务端或模型存在问题。
+**Scenario**: during tool calls and model reasoning, high-frequency text changes make the interface jitter badly and create serious visual noise.
 
-**做法**：在客户端的视图渲染层对 text part 统一进行归一化清洗（包括去除多余首尾空白、过滤纯空白分块、剔除泄漏的思考标签等），且该归一化必须具备**代码块围栏感知能力（fence-aware）**——逐行检测代码围栏语法（``` 与 ~~~），对于围栏内部（包含围栏标记行本身）的所有标签均不做清洗，因为服务端解析器对代码围栏完全无感知。此外，归一化处理仅针对 assistant 角色的 text part，对用户消息则严格保持原样（以确保用户输入中涉及标签讨论的内容不受影响）。
+**Approach**:
+- Pull the derivation of text state and the debounce logic together into the lower logic layer.
+- Define clear refresh rules: changes within a 2.5s window update with a delayed smooth transition, and changes beyond the window take effect immediately.
+- Define the calculation priority for elapsed-time data in the completed and running states, so misleading fake-precision numbers are not displayed.
 
-**Lesson**：客户端归一化具有天然的幂等性（对于输出规范的模型没有任何副作用），改动影响范围最小，且能与 Web / Android 端保持一致的行为标准。针对各类模型的输出特例与怪癖，优先在客户端渲染层进行防御性修复，尽量避免动摇服务端与模型链路。
+**Lesson**: readability of information is also a key part of the realtime interaction experience. For users, a stable and trustworthy presentation of state is worth far more than refreshing on every tiny change.
 
 ---
 
-## 20. 「session 特有 vs 系统性」：对照干净 session 的统计来区分
+## 13. SSH UX should put the user's next action on screen
 
-**场景**：在定位某些模型输出异常的缺陷时，很容易将“仅在特定会话中产生的特殊现象（artifact）”误判为“该模型全局存在的系统性缺陷”（例如本次排查中遇到的 think 标签泄漏，实际上仅源自该会话正巧在讨论这些标签本身，而在其他常规会话中出现频次为 0）。
+**Scenario**: when configuring an SSH tunnel, users easily get stuck: the toggle is on but the connection fails, or they do not know where to go next.
 
-**做法**：选取一个**干净会话（clean session）**（即完全不涉及该特定讨论主题且具备足够样本量，例如包含 219 条 text part 的常规会话）作为基准对照组，与问题会话逐项比对统计指标（如首尾多余换行、纯空白分块、包含特定标签的分块占比等）。若基准会话中异常统计为 0 而当前会话显著偏高，则说明纯属会话特有现象；只有当对照组同样呈现高频异常时，才能定性为系统性问题。
+**Approach**:
+- Generate the full SSH command line on screen with one-tap copy, removing the mental burden of assembling the command by hand.
+- Keep the public key copy entry permanently visible instead of tying it to the toggle's enabled state.
+- Give explicit guidance in the SSH configuration area: after enabling the configuration, go back up and tap `Test Connection` to complete the connectivity check.
 
-**Lesson**：在将某一问题定性为“系统性缺陷”之前，必须引入不包含干扰因子的基准对照样本进行量化统计；缺乏严谨对照的情况下，单凭眼见“样本很多”并不能直接推导出“全局系统性”的结论。
+**Lesson**: for a configuration screen, complete fields are only part of the value; the screen must also guide users smoothly through the entire flow. Stating the explicit next action in the UI copy greatly reduces interaction friction.
+
+---
+
+## 14. For long sessions on weak networks, do message paging before redoing rendering
+
+**Scenario**: after the view rendering optimizations, interactions were already smooth enough on a LAN, but loading the first screen of a long session over the WAN or through an SSH tunnel still showed noticeable delay.
+
+**Approach**:
+- First verify that the backend supports the `GET /session/:id/message?limit=` endpoint, then change the client's initial load strategy to fetch only the most recent 3 interaction rounds (6 messages) by default.
+- Provide a clear pull-to-load-older-messages interaction that walks back through history in fixed steps (+6).
+- Localize the paging hint copy and loading states so users do not misread the behavior as older data being lost.
+
+**Lesson**: on weak, high-latency links, first-screen loading is usually bottlenecked by transfer size and network round-trip cost (RTT). Landing controlled message paging first usually brings larger, more stable performance gains than digging into fine-tuning in the view rendering layer.
+
+---
+
+## 15. Clarify message semantics before designing the limit strategy
+
+**Scenario**: discussions of message truncation often hit a counting question: if one model interaction includes 10 tool calls and 1 final answer, does the whole thing count as 11 messages or 1 message?
+
+**Approach**:
+- Align strictly with the server's underlying data model: each tool call is a `part` under a message rather than an independent `message` entity.
+- Make clear that the paging parameter `limit` controls the number of top-level messages, not the tool-call granularity.
+- Unify this definition in the PRD, RFC, and other spec documents to remove later misreading of "3 rounds correspond to 6 messages".
+
+**Lesson**: before designing paging and truncation strategies, clarify and unify the counting semantics of the underlying data entities first. Otherwise product and technical discussions keep burning effort on the ambiguity of one item visually versus several items in the logical data.
+
+---
+
+## 16. Session and Project: creation allowed only on Server default
+
+**Scenario**: after creating a new session in the iOS client, the freshly created session would inexplicably disappear when opening the session list or when the app went to the background and came back.
+
+**Root cause**: the server's `POST /session` endpoint does not accept a `directory` parameter, so sessions are always created under the server's current default project (decided by the CLI start path or the last action in the Web/TUI). The Project switcher on the iOS side only affects the `GET /session?directory=X` list filter and cannot change where new sessions are actually created. When the project selected in the client differs from the server's default project, the new session lands in the server's default project, cannot appear in the current filtered list, and "disappears" after a refresh.
+
+**Attempts made**:
+1. **mergeCurrentSessionIfMissing**: during `loadSessions`, if the current session is missing from the list, fetch it separately and force-prepend it to the front of the list → treated the symptom only, and `GET /session/:id` can return 404 outright when queried across projects.
+2. **Filter session.updated by project**: keeps session change events from other projects out of the current list → reasonable design, kept.
+3. **A Settings warning pointing users to the Web UI to switch** → did not hold up: the Web UI also cannot change the server's working directory remotely.
+4. **Remove project selection (rollback)** → not adopted: keeping multi-project list filtering still has practical value.
+
+**Final approach**: the new-session entry is available only when Server default is selected. When the user switches to a specific project, the new-session button is grayed out and an info icon appears next to it; tapping it explains that to create a session in another directory, OpenCode must be started from the terminal with the target working directory, after which switching back to Server default in the client makes creation work normally.
+
+**Lesson**: in a multi-project system where the underlying API does not yet support specifying a working directory at creation time, constrain the creation entry at the interaction layer rather than patching things up afterwards at the data layer in fragile ways. Keep the semantic boundary between "list filtering" and "session creation" clearly decoupled, so users do not form the wrong mental model that selecting a project means sessions can be created there.
+
+---
+
+## 17. Relative path normalization must collapse `..` properly instead of just deleting it
+
+**Scenario**: when viewing deep documents such as `docs/reports/*.md` in the iOS client's Markdown preview, images referenced through relative paths (for example `![x](../assets/foo.png)`) failed to load, while the text layout was completely fine.
+
+**Root cause**: `MarkdownImageResolver` first joins the document's directory with the relative path into `docs/reports/../assets/foo.png` and hands it to `PathNormalizer.resolveWorkspaceRelativePath(...)`. The old implementation simply filtered out the `.` and `..` segments without folding the path under standard filesystem semantics, so the path was resolved incorrectly to `docs/reports/assets/foo.png` and a file path that does not exist was requested.
+
+**Final approach**: fixed at two layers. In the first layer, `PathNormalizer.normalize()` was refactored into a stack-based path folding algorithm: normal path segments are pushed in order, `.` is skipped, and `..` pops the top of the stack when it is non-empty. This way `docs/reports/../assets/foo.png` folds accurately to `docs/assets/foo.png`, while path traversal past the workspace root is still effectively blocked. In the second layer, the Markdown preview in `FileContentView` no longer relies on `MarkdownUI`'s default network image loader to guess relative paths; it explicitly injects `imageBaseURL` and a custom `WorkspaceMarkdownImageProvider`, and reads image data inside the workspace through `state.loadFileContent` for controlled rendering.
+
+**Lesson**: security handling for relative paths is never solved by simply "stripping dangerous characters". Crudely trimming `..` directly breaks legitimate relative path levels and easily causes hidden failures in document image rendering, patch-related jumps, and relative references inside code. In addition, third-party Markdown rendering engines usually assume their default image loading strategy receives a final usable network URL; to reliably support relative-path resources inside a project, the client must take over base URL maintenance and a custom resource loader itself and cannot rely on the implicit behavior of the default network loader.
+
+---
+
+## 18. A streaming reasoning parser is a one-shot state machine: a literal end tag inside thinking permanently terminates reasoning early
+
+**Scenario**: streaming parsers such as SGLang's `--reasoning-parser qwen3` are **one-shot** state machines. During the thinking output phase, the first `</think>` detected (wherever it appears within a line) permanently turns off reasoning mode, and every streaming chunk after that is passed through as ordinary body text. If the model outputs a literal `</think>` string inside its thinking content (for example while analyzing and discussing that tag itself), the thinking stream ends early and unexpectedly, and the remaining unfinished thinking content plus the real `</think>` tag all leak into the body content stream.
+
+**Approach**: when debugging "thinking content leaking into the body text", first read the serving layer's parser implementation source to confirm how the state machine works (whether it triggers in one direction, the exact end-tag matching rules, and so on), then cross-check with log data: whether the reasoning part is cut off mid-sentence, and whether the text part continues exactly from the second half of the same sentence.
+
+**Lesson**: the tokenizer cannot tell "the tag discussed as ordinary text" apart from "the real end-of-thinking marker" at the bottom layer, and this kind of ambiguity usually has to be absorbed in the client's normalization layer. Before starting an investigation, understand the serving layer parser's state machine transitions first, so no effort is wasted digging through the server business layer or the model training layer.
+
+---
+
+## 19. Client-side normalization is the right layer to fix model output quirks, and it must be fence-aware
+
+**Scenario**: the server usually stores and forwards the model's raw output as-is (the extra blank lines and leaked thinking tags in the output are generation traits of the model itself; the server is not at fault); the same data renders fine on both Web and Android after each side applies its own display normalization. When one client renders badly, the root cause is usually that this client lacks the targeted data normalization logic, while the server and the model are fine.
+
+**Approach**: normalize and clean text parts uniformly in the client's view rendering layer (trimming extra leading and trailing whitespace, filtering whitespace-only chunks, removing leaked thinking tags, and so on), and the normalization must be **fence-aware**: detect code fence syntax line by line (``` and ~~~), and never clean any tags inside a fence (including the fence marker lines themselves), because the server-side parser is completely unaware of code fences. In addition, normalization applies only to text parts of the assistant role; user messages are strictly kept as-is (so content in user input that discusses these tags is unaffected).
+
+**Lesson**: client-side normalization is naturally idempotent (no side effects for models with well-formed output), has the smallest blast radius, and keeps behavior consistent with the Web and Android clients. For the output quirks of various models, prefer defensive fixes in the client rendering layer and avoid disturbing the server and model pipeline.
+
+---
+
+## 20. Session-specific vs systemic: distinguish with statistics from a clean session
+
+**Scenario**: when hunting a defect in model output, it is easy to misread an artifact that only appears in one particular session as a systemic defect of the model everywhere (the think tag leak in this investigation actually came only from that session happening to discuss the tags themselves, with a frequency of 0 in other ordinary sessions).
+
+**Approach**: pick a **clean session** (one that never touches the particular discussion topic and has enough samples, for example an ordinary session with 219 text parts) as the baseline control, and compare statistics item by item with the problem session (extra leading and trailing newlines, whitespace-only chunks, the share of chunks containing specific tags, and so on). If the baseline session shows 0 anomalies while the current session is significantly higher, the phenomenon is purely session-specific; only when the control group shows the same high-frequency anomalies can the problem be classified as systemic.
+
+**Lesson**: before classifying a problem as a systemic defect, bring in baseline control samples that do not contain the interfering factor and run quantitative statistics. Without a rigorous control, simply seeing "lots of samples" does not lead to a "global systemic" conclusion.

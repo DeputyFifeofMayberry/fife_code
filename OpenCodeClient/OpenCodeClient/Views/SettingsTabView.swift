@@ -127,17 +127,6 @@ struct SettingsTabView: View {
                         .pickerStyle(.segmented)
                         .labelsHidden()
                     }
-
-                    VStack(alignment: .leading, spacing: DesignSpacing.sm) {
-                        Text(L10n.t(.settingsLanguage))
-                        Picker(L10n.t(.settingsLanguage), selection: $state.languagePreference) {
-                            Text(L10n.t(.settingsLanguageSystem)).tag(L10n.LanguagePreference.system)
-                            Text(L10n.t(.settingsLanguageEnglish)).tag(L10n.LanguagePreference.en)
-                            Text(L10n.t(.settingsLanguageChinese)).tag(L10n.LanguagePreference.zh)
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                    }
                 }
 
                 Section {

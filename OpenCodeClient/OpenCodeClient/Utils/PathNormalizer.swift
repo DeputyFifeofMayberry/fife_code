@@ -5,10 +5,10 @@
 
 import Foundation
 
-/// 统一路径规范化：用于 API 请求、文件跳转等
+/// Unified path normalization for API requests, file navigation, and more
 nonisolated enum PathNormalizer {
 
-    /// 规范化文件路径：去除 a/b 前缀、# 及后缀、:line:col 后缀
+    /// Normalize a file path: strip the a/b prefix, the # and its suffix, and the :line:col suffix
     static func normalize(_ path: String) -> String {
         var s = trimPathWhitespace(path)
 

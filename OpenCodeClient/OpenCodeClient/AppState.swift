@@ -182,7 +182,6 @@ final class AppState {
     static let currentHostProfileIDKey = "currentHostProfileID.v1"
     static let aiUsageDashboardURLKey = "aiUsageDashboardURL"
     static let carModeEnabledKey = "carModeEnabled"
-    static let languagePreferenceKey = L10n.languagePreferenceUserDefaultsKey
     static let carSessionsByContextKey = "carSessionsByContext.v1"
     static let healthExportPermissionKey = "clientCapability.healthExportAll.permission.v1"
     static let modelShortlistKey = "modelShortlist.v1"
@@ -254,7 +253,6 @@ final class AppState {
         ) ?? .gptLiveTranscribe
         _selectedProjectWorktree = defaults.string(forKey: Self.selectedProjectWorktreeKey)
         _customProjectPath = defaults.string(forKey: Self.customProjectPathKey) ?? ""
-        _languagePreference = L10n.languagePreference
         _aiUsageDashboardURL = defaults.string(forKey: Self.aiUsageDashboardURLKey) ?? ""
         isCarModeEnabled = defaults.bool(forKey: Self.carModeEnabledKey)
         healthExportPermission = ClientCapabilityPermission(
@@ -766,24 +764,16 @@ final class AppState {
     }
 
     var themePreference: String = "auto"  // "auto" | "light" | "dark"
-    var _languagePreference: L10n.LanguagePreference = .system
-    var languagePreference: L10n.LanguagePreference {
-        get { _languagePreference }
-        set {
-            _languagePreference = newValue
-            L10n.languagePreference = newValue
-        }
-    }
 
     var sessionDiffs: [FileDiff] { get { fileStore.sessionDiffs } set { fileStore.sessionDiffs = newValue } }
     var selectedDiffFile: String? { get { fileStore.selectedDiffFile } set { fileStore.selectedDiffFile = newValue } }
     var selectedTab: Int = RootTab.chat.rawValue
     /// When set, Settings should open and pulse the matching row.
     var settingsFocus: SettingsFocus?
-    var fileToOpenInFilesTab: String?  // 从 Chat 中 tool 点击跳转时设置，Files tab 或 sheet 展示
+    var fileToOpenInFilesTab: String?  // Set when tapping a tool link in Chat jumps to a file; shown in the Files tab or sheet
     var fileToOpenInFilesTabWorkspaceDirectory: String?
 
-    /// iPad 三栏布局：中间栏文件预览
+    /// iPad three-column layout: file preview in the middle column
     var previewFilePath: String?
     var previewFileWorkspaceDirectory: String?
 
@@ -1097,11 +1087,11 @@ final class AppState {
         return sessionTodos[id] ?? []
     }
 
-    /// 是否应处理 message.updated：有 sessionID 时需匹配当前 session，否则保持原行为
+    /// Whether to process message.updated: when a sessionID exists it must match the current session, otherwise keep the original behavior
     nonisolated static func shouldProcessMessageEvent(eventSessionID: String?, currentSessionID: String?) -> Bool {
         guard currentSessionID != nil else { return false }
         if let sid = eventSessionID { return sid == currentSessionID }
-        return true  // 无 sessionID 时保持原行为（向后兼容）
+        return true  // Keep the original behavior when there is no sessionID (backward compatible)
     }
 
     /// Async request result should only apply when requested session is still current.
