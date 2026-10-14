@@ -1,51 +1,51 @@
-# RFC-002: OpenCode iOS Client 技术方案
+# RFC-002: OpenCode iOS Client Technical Design
 
 > Request for Comments · Working Draft · Mar 2026
 
-## 元数据
+## Metadata
 
-| 字段 | 值 |
+| Field | Value |
 |------|------|
-| **RFC 编号** | RFC-002 |
-| **标题** | OpenCode iOS Client 技术方案 |
-| **状态** | Working Draft |
-| **创建日期** | 2026-03 |
-| **PRD 引用** | [OpenCode_iOS_Client_PRD.md](OpenCode_iOS_Client_PRD.md) |
-| **API 参考** | [OpenCode_Web_API.md](OpenCode_Web_API.md) |
+| **RFC number** | RFC-002 |
+| **Title** | OpenCode iOS Client Technical Design |
+| **Status** | Working Draft |
+| **Created** | 2026-03 |
+| **PRD reference** | [OpenCode_iOS_Client_PRD.md](OpenCode_iOS_Client_PRD.md) |
+| **API reference** | [OpenCode_Web_API.md](OpenCode_Web_API.md) |
 
 ---
 
-## 摘要
+## Abstract
 
-本 RFC 提出 OpenCode iOS Client 的技术实现方案，用于落地 PRD 定义的产品目标。方案核心是在 iOS 17+ 上构建一个轻量、以 SwiftUI 为主的原生客户端，通过 HTTP REST 与 SSE 配合 OpenCode Server 通信，提供远程监控、消息发送以及文档审查等能力。本文档重点阐述技术选型、架构设计与关键实现细节，供开发前评审与达成共识。
-
----
-
-## 背景
-
-### 问题
-
-开发者使用 OpenCode 时，经常需要在电脑前等待 AI 完成耗时较长的任务；一旦离开工位，便无法及时掌握进度或快速纠偏。现有的 Web 客户端依赖浏览器，在移动端体验欠佳；而 TUI 绑定在终端环境，无法在手机上直接使用。
-
-### 目标
-
-提供原生 iOS 客户端，让用户能够在手机或平板上完成以下操作：
-- 监控 AI 工作进度
-- 发送消息、切换模型
-- 以文档审查为主查看 Markdown diff
-- 必要时中止任务或排队发送新指令
-
-### 约束
-
-- 最低支持 iOS 17（采用 Observation 框架）
-- 客户端本身不引入本地 AI 推理、文件系统或 shell 执行能力
-- 支持局域网直连、Tailscale MagicDNS 与 SSH tunnel 远程访问；公网环境（非 Tailscale）要求使用 HTTPS 或 SSH 转发。Tailscale（`*.ts.net`）配置 ATS 例外豁免并允许 HTTP；在 Settings 中，Tailscale + HTTP 协议标签显示为灰色，其余 WAN + HTTP 显示为红色，info 图标悬停提示提供中英双语说明
+This RFC proposes the technical implementation for the OpenCode iOS Client, realizing the product goals defined in the PRD. The core of the design is a lightweight, SwiftUI-first native client on iOS 17+ that talks to the OpenCode Server over HTTP REST and SSE, providing remote monitoring, message sending, and document review. The document focuses on technology choices, architecture, and key implementation details, for review and alignment before development starts.
 
 ---
 
-## 方案
+## Background
 
-### 1. 整体架构
+### Problem
+
+Developers using OpenCode often have to wait at the computer while the AI finishes a long task; once they step away, they lose track of progress and cannot correct course quickly. The existing web client depends on a browser and works poorly on mobile, while the TUI is bound to a terminal and cannot run on a phone.
+
+### Goals
+
+Provide a native iOS client so users can do the following from a phone or tablet:
+- Monitor AI work progress
+- Send messages and switch models
+- Review Markdown diffs with the emphasis on documents
+- Abort tasks or queue new instructions when needed
+
+### Constraints
+
+- Minimum iOS 17 (Observation framework)
+- The client itself adds no local AI inference, file system, or shell execution
+- LAN direct connection, Tailscale MagicDNS, and SSH tunnel remote access are supported; public internet environments (non-Tailscale) require HTTPS or SSH forwarding. Tailscale (`*.ts.net`) gets an ATS exception and may use HTTP. In Settings, the Tailscale + HTTP protocol label appears in gray while other WAN + HTTP labels appear in red, with hover text on the info icon provided in both Chinese and English
+
+---
+
+## Design
+
+### 1. Overall Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -55,7 +55,7 @@
 │  ─────────             │  ─────────               │  ─────────    │
 │  ChatTab (Views/Chat/) │  AppState (@Observable)   │  APIClient    │
 │  FilesTab              │  SessionStore, etc.      │  SSEClient    │
-│  SettingsTab           │  (单一 AppState 持有)     │               │
+│  SettingsTab           │  (single AppState)       │               │
 │  MessageRow, DiffView  │                          │               │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -67,41 +67,41 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-- **Views**：SwiftUI 视图层，按 Chat / Files / Settings / Split View 模块划分
-- **State**：基于 `@Observable` 管理连接、Session、消息、文件等状态
-- **Controllers / Services / Stores / Models / Utils**：将事件控制、网络层、状态存储、数据模型与工具层解耦组织
+- **Views**: the SwiftUI view layer, organized into Chat / Files / Settings / Split View modules
+- **State**: `@Observable`-based management of connection, session, message, and file state
+- **Controllers / Services / Stores / Models / Utils**: decoupled layers for event handling, networking, state storage, data models, and utilities
 
-### 2. 技术选型
+### 2. Technology Choices
 
-| 层面 | 选择 | 理由 |
+| Layer | Choice | Rationale |
 |------|------|------|
-| UI | SwiftUI | 原生声明式框架，与 iOS 17+ 契合度最高 |
-| 状态 | Observation (@Observable) | 替代 ObservableObject，显著减少模板代码 |
-| 网络 | URLSession | 系统原生能力，无需引入 Alamofire；SSE 基于 `URLSession` 的 `Delegate` 或 `AsyncSequence` 实现 |
-| SSH 库 | Citadel | 基于 Apple SwiftNIO SSH 封装，支持 Swift 5.10+，API 设计更友好 |
-| Markdown | MarkdownUI + 自定义图片 provider / resolver | 完整支持代码块、链接、列表，并支持 workspace 内相对路径图片解析 |
-| Diff | 自建 View（优先 iOS 原生能力） | 基于 `before`/`after` 实现 unified diff 渲染与行级高亮 |
-| 持久化 | UserDefaults + Keychain | 保存连接配置与模型预设；敏感密码存入 Keychain |
+| UI | SwiftUI | Native declarative framework, the best fit for iOS 17+ |
+| State | Observation (@Observable) | Replaces ObservableObject and cuts boilerplate significantly |
+| Networking | URLSession | A system-native capability, no Alamofire needed; SSE is built on the `URLSession` `Delegate` or `AsyncSequence` |
+| SSH library | Citadel | Wraps Apple SwiftNIO SSH, supports Swift 5.10+, friendlier API design |
+| Markdown | MarkdownUI + custom image provider / resolver | Full support for code blocks, links, and lists, plus workspace-relative image resolution |
+| Diff | Custom view (iOS native capabilities first) | Unified diff rendering and line-level highlighting based on `before`/`after` |
+| Persistence | UserDefaults + Keychain | Connection settings and model presets; sensitive passwords in the Keychain |
 
-#### 2.1 SSH 库选型：Citadel
+#### 2.1 SSH Library Choice: Citadel
 
-用于实现 SSH 隧道的远程访问能力。
+Used to implement the SSH tunnel remote access capability.
 
-| 库 | 语言 | 维护状态 | Swift 版本 | 推荐度 |
+| Library | Language | Maintenance | Swift version | Rating |
 |----|------|----------|------------|--------|
-| **Citadel** | Swift (基于 SwiftNIO SSH) | 活跃 (0.12.0, 2026-01) | 5.10+ | ★★★★★ |
-| SwiftNIO SSH | Swift (Apple 官方) | 活跃 | 6.0+ | ★★★★ |
-| NMSSH | Obj-C wrapper of libssh2 | 活跃 | 5.0+ | ★★★ |
+| **Citadel** | Swift (on SwiftNIO SSH) | Active (0.12.0, 2026-01) | 5.10+ | ★★★★★ |
+| SwiftNIO SSH | Swift (official Apple) | Active | 6.0+ | ★★★★ |
+| NMSSH | Obj-C wrapper of libssh2 | Active | 5.0+ | ★★★ |
 
-**选择 Citadel 的原因**：
+**Why Citadel**:
 
-1. **无需升级 Swift 6.0**：支持 Swift 5.10+，避免了 Swift 6 并发安全检查带来的破坏性变更（breaking changes）
-2. **高层 API**：在 Apple SwiftNIO SSH 之上进行了封装，调用体验比直接使用 SwiftNIO SSH 更简单直观
-3. **功能完整**：完整支持 Ed25519 密钥认证、DirectTCPIP 端口转发以及 SFTP
-4. **维护活跃**：已发布 44 个 release，稳定支持 SSH direct-tcpip 端口转发
-5. **文档完备**：提供清晰的 README 示例与[官方文档](https://swiftpackageindex.com/orlandos-nl/Citadel/0.12.0/documentation/citadel)
+1. **No Swift 6.0 upgrade required**: supports Swift 5.10+, avoiding the breaking changes that come with Swift 6 concurrency checking
+2. **Higher-level API**: wraps Apple SwiftNIO SSH, making calls simpler and more intuitive than using SwiftNIO SSH directly
+3. **Complete feature set**: full support for Ed25519 key authentication, DirectTCPIP port forwarding, and SFTP
+4. **Actively maintained**: 44 releases published, with stable SSH direct-tcpip port forwarding
+5. **Good documentation**: clear README examples and [official docs](https://swiftpackageindex.com/orlandos-nl/Citadel/0.12.0/documentation/citadel)
 
-**使用示例**：
+**Usage example**:
 
 ```swift
 import Citadel
@@ -114,7 +114,7 @@ let settings = SSHClientSettings(
 )
 let client = try await SSHClient.connect(to: settings)
 
-// 本地端口转发：iOS:4096 -> SSH gateway assigned port -> OpenCode
+// Local port forwarding: iOS:4096 -> SSH gateway assigned port -> OpenCode
 let channel = try await client.createDirectTCPIPChannel(
     using: .init(
         targetHost: "127.0.0.1",
@@ -124,73 +124,73 @@ let channel = try await client.createDirectTCPIPChannel(
 )
 ```
 
-### 3. 网络层设计
+### 3. Network Layer Design
 
 #### 3.1 REST API
 
-- 基于 `URLSession` 封装统一的 `APIClient`
-- 统一 Base URL 格式为 `http://<ip>:<port>` 或 `https://<host>:<port>`，默认值为 `127.0.0.1:4096`，读取自 Settings 配置
-- 若配置了 Basic Auth，所有请求均自动附加对应的认证请求头
-- 发送消息推荐使用 `POST /session/:id/prompt_async`，当 session 处于 busy 状态时由服务端负责排队
+- A unified `APIClient` wrapped around `URLSession`
+- Base URL format is `http://<ip>:<port>` or `https://<host>:<port>`, defaulting to `127.0.0.1:4096`, read from Settings
+- With Basic Auth configured, every request automatically carries the auth header
+- For sending messages, `POST /session/:id/prompt_async` is recommended; the server queues while the session is busy
 
-#### 3.1.1 消息分页拉取（已实现）
+#### 3.1.1 Message Pagination (Implemented)
 
-- 调用 `GET /session/:id/message` 时通过 `limit` 参数进行分页拉取，默认加载最近 6 条 message（对应 3 轮 user/assistant 对话）
-- 用户在 Chat 顶部下拉触发“加载更多历史消息”时，`limit` 每次递增 6 并重新发起拉取请求
-- 该设计的核心目标是将弱网环境下的首屏等待时间从拉取“全量历史”收敛至加载“最近可操作上下文”
-- 需要注意：`limit` 的统计单位是 **message**，而非 tool 调用次数；单个 assistant message 内可包含多个 tool/text/reasoning parts
+- `GET /session/:id/message` paginates through the `limit` parameter, loading the most recent 6 messages by default (3 user/assistant rounds)
+- When the user pulls down at the top of Chat to load more history, `limit` increases by 6 each time and the fetch is reissued
+- The goal is to cut first-screen wait on weak networks from pulling full history to loading the most recent actionable context
+- Note that `limit` counts **messages**; tool calls are not the unit of measure, and one assistant message can contain multiple tool/text/reasoning parts
 
-#### 3.1.2 Edit from here / message revert（已实现 MVP）
+#### 3.1.2 Edit from here / message revert (MVP Implemented)
 
-iOS 客户端支持与 Web 端同源的 message revert MVP 功能，允许用户从指定的某条 user message 回退到历史节点，将原消息内容重新填回 composer，以便修改后再次发送。
+The iOS client supports the message revert MVP, shared in behavior with the web client: the user can roll back to a chosen user message, with the original content refilled into the composer for editing and resending.
 
-- 数据模型：`Session` 模型解析服务端返回的 `revert` 字段，其核心最小字段集包括 `messageID`、`partID`、`snapshot` 与 `diff`
-- API 交互：`APIClient.revertSession(sessionID:messageID:partID:)` 调用 `POST /session/:id/revert`，请求体为 `{ messageID, partID? }`，并返回更新后的 `Session` 对象
-- UI 入口：在 `MessageRowView` 的 user message 菜单中新增 `Edit from here` 选项；当 session 处于 busy 状态时自动禁用该操作，避免与服务端的 `assertNotBusy` 产生冲突
-- 状态编排：`AppState.editFromMessage(messageID:)` 仅处理 user message，将关联的 text parts 拼接后写回对应 session 的草稿箱（per-session draft），更新并插入返回的 session 实例，随后刷新 messages、diff 及 file status
-- 消息可见性：`AppState.visibleMessages(_:revertMessageID:)` 遵循 OpenCode Web 的展示语义，隐藏满足 `message.id >= revert.messageID` 的已回滚消息，同时保留临时的 optimistic message
-- 非目标：当前 MVP 暂不提供 `unrevert`、restore dock 以及 part-level revert 能力，后续按需演进
+- Data model: the `Session` model parses the server-returned `revert` field, whose minimal core field set is `messageID`, `partID`, `snapshot`, and `diff`
+- API interaction: `APIClient.revertSession(sessionID:messageID:partID:)` calls `POST /session/:id/revert` with a body of `{ messageID, partID? }` and returns the updated `Session` object
+- UI entry: an `Edit from here` option in the user message menu of `MessageRowView`; the action is disabled automatically while the session is busy, avoiding conflicts with the server-side `assertNotBusy`
+- State orchestration: `AppState.editFromMessage(messageID:)` handles user messages only, concatenates the associated text parts into that session's per-session draft, updates and inserts the returned session instance, and then refreshes messages, diff, and file status
+- Message visibility: `AppState.visibleMessages(_:revertMessageID:)` follows the OpenCode Web display semantics, hiding reverted messages where `message.id >= revert.messageID`, while keeping the temporary optimistic message
+- Non-goals: the current MVP ships no `unrevert`, restore dock, or part-level revert; these evolve as needed
 
-#### 3.1.3 Image attachments（已实现 Phase 1/2）
+#### 3.1.3 Image attachments (Phase 1/2 Implemented)
 
-iOS 端的图片支持在设计上与 OpenCode Web 保持同构：图片作为 prompt 中的 `file` part 发送，`url` 字段直接携带 `data:<mime>;base64,...`，无需引入独立的文件上传接口。
+Image support on iOS is structurally identical to OpenCode Web: images are sent as a `file` part of the prompt, with the `url` field carrying `data:<mime>;base64,...` directly, so no separate file upload endpoint is needed.
 
-- 发送模型：`APIClient.promptAsync` 支持图文混合 parts；纯文本生成 `type: "text"`，图片则生成包含 `type: "file"`、`mime`、`filename` 与 `url` 的结构
-- 输入控制（Composer）：`ChatTabView` 集成 `PhotosPicker` 供用户挑选图片，单次最多选择 4 张；选中的图片在本地压缩转为 JPEG data URL（最长边限制为 2048 像素，JPEG quality 取 0.82），单张图片压缩后大小上限为 5MB
-- 失败恢复：若发送失败，自动还原输入框文本与待发送附件的状态；optimistic user message 会同步包含对应的 text part 与 file part
-- 渲染模型：`Part` 模型负责解析 `mime`、`filename`、`url` 和 `source` 字段；`MessageRowView` 针对 `type == "file"` 的条目渲染图片缩略图或兜底的 file card
-- 图片预览：点击历史消息中的 image attachment，复用现有的 `ImageView` 进行缩放与平移预览（zoom/pan）
-- 非目标：本阶段暂不涉及从 Files App 选取文件、PDF/文本附件支持、跨 App 重启的附件草稿持久化，以及服务端独立 upload 或大 payload 分片传输
+- Send model: `APIClient.promptAsync` supports mixed text and image parts; plain text produces `type: "text"`, and images produce a structure with `type: "file"`, `mime`, `filename`, and `url`
+- Input control (Composer): `ChatTabView` integrates `PhotosPicker` for picking images, up to 4 at a time; selected images are compressed locally into JPEG data URLs (longest edge capped at 2048 pixels, JPEG quality 0.82), with a 5MB cap per compressed image
+- Failure recovery: when a send fails, the input text and pending attachments are restored automatically; the optimistic user message includes the matching text part and file part
+- Render model: the `Part` model parses the `mime`, `filename`, `url`, and `source` fields; `MessageRowView` renders a thumbnail or a fallback file card for entries with `type == "file"`
+- Image preview: tapping an image attachment in a historical message reuses the existing `ImageView` for zoom/pan preview
+- Non-goals at this stage: picking files from the Files app, PDF/text attachments, attachment draft persistence across app restarts, and a separate server upload or chunked transfer of large payloads
 
-#### 3.2 SSE 连接
+#### 3.2 SSE Connection
 
-- 连接服务端事件流接口 `GET /global/event`
-- 基于 `URLSession` 的 `dataTask` 或 `URLSession.AsyncBytes` 进行流式读取
-- 解析以 `data:` 开头的行，按行或双换行符 `\n\n` 划分独立事件
-- 事件数据格式为：`{ directory, payload: { type, properties } }`
+- Connect to the server event stream endpoint `GET /global/event`
+- Streamed reading via the `URLSession` `dataTask` or `URLSession.AsyncBytes`
+- Parse lines starting with `data:`, splitting events on newlines or the double newline `\n\n`
+- Event data format: `{ directory, payload: { type, properties } }`
 
-**生命周期管理**：
-- 前台状态：建立或恢复 SSE 连接
-- 后台状态：主动断开连接以遵守 iOS 系统后台限制
-- 恢复流程：回到前台时，先通过 REST API 全量拉取最新数据（health、sessions、messages、status），随后重建 SSE 连接
+**Lifecycle management**:
+- Foreground: establish or resume the SSE connection
+- Background: disconnect proactively to respect iOS background limits
+- Recovery: on returning to the foreground, pull all latest data through the REST API first (health, sessions, messages, status), then rebuild the SSE connection
 
-#### 3.3 错误与重连
+#### 3.3 Errors and Reconnection
 
-- 网络异常：弹出 Toast 提示用户，严禁引发 App 崩溃（crash）
-- SSE 意外断开：采用指数退避算法（exponential backoff）尝试重连，重连间隔上限为 30s
-- 服务端不可达：Settings 页面状态标识为 Disconnected，Chat 和 Files 页面展示对应的占位提示
+- Network errors: show a Toast to the user; crashing the app is never acceptable
+- Unexpected SSE disconnect: retry with exponential backoff, capped at a 30s interval
+- Server unreachable: Settings shows a Disconnected status, and Chat and Files show placeholder messages
 
-#### 3.4 SSE 鲁棒性
+#### 3.4 SSE Robustness
 
-- 数据解析：服务端 API 目前采用单行 `data:` 输出格式，现有解析逻辑已能满足需求
-- 请求头配置：建议在请求中明确指定 `Accept: text/event-stream` 与 `Cache-Control: no-cache`
-- 重连：可选——现有轮询与前台恢复已覆盖主要场景
+- Parsing: the server API currently emits single-line `data:` output, which the existing parsing handles
+- Headers: requests should explicitly set `Accept: text/event-stream` and `Cache-Control: no-cache`
+- Reconnection: optional; the current polling and foreground recovery already cover the main cases
 
-### 3.5 Host Profiles 与 Transport 抽象
+### 3.5 Host Profiles and the Transport Abstraction
 
-引入多 host 支持的目的是解耦“连接哪个 OpenCode 环境”与“通过何种路径到达该环境”。其中，Host 代表一个具体的 OpenCode 运行环境，Transport 则代表底层网络传输路径。Direct 传输模式覆盖局域网直连、Tailscale / VPN 以及公网 HTTPS 服务；SSH Tunnel 模式则用于通过 SSH gateway 及分配的 remote port 访问内网隔离的 OpenCode 容器。
+Multi-host support exists to decouple "which OpenCode environment to connect to" from "which path reaches it". A Host is one concrete OpenCode environment, and a Transport is the underlying network path. The Direct transport covers LAN direct connection, Tailscale / VPN, and public HTTPS services; SSH Tunnel mode reaches an intranet-isolated OpenCode container through an SSH gateway and an assigned remote port.
 
-**数据模型（设计稿）**：
+**Data model (design draft)**:
 
 ```swift
 struct HostProfile: Codable, Identifiable, Equatable {
@@ -214,22 +214,22 @@ struct BasicAuthConfig: Codable, Equatable {
 }
 ```
 
-**持久化边界**：
+**Persistence boundaries**:
 
-- `HostProfile` 列表保存在 UserDefaults 或轻量 JSON store 中；敏感密码仅存储 Keychain 引用标识（Keychain reference），不直接写入 JSON 数据。
-- SSH 私钥（private key）默认采用设备级密钥（device-level key），由现有的 `SSHKeyManager` 统一管理，多个 SSH profile 共享同一个公钥。私钥为长期设备身份：仅首次引导（Keychain 条目确实缺失时）与用户显式 Rotate 才生成；读取路径 fail-closed，Keychain 暂不可读时报错而不重新生成，公钥缓存由私钥派生校验。未来若需要更高安全隔离级别，可在此基础上增加针对单 profile 的 key override 配置。
-- TOFU（Trust On First Use）的 known host 记录依然严格按 SSH gateway 的 `host:port` 进行绑定，而非绑定到 profile 名称。当多个 profile 指向同一个 gateway 时，它们将共享同一份受信任的 host 指纹信息。
+- The `HostProfile` list lives in UserDefaults or a lightweight JSON store; sensitive passwords are stored only as Keychain references and are never written into the JSON data.
+- The SSH private key defaults to a device-level key managed by the existing `SSHKeyManager`, with multiple SSH profiles sharing one public key. The private key is a long-lived device identity: it is generated only during first bootstrapping (when the Keychain item is genuinely missing) or on explicit user Rotate. The read path is fail-closed: when the Keychain is temporarily unreadable it errors instead of regenerating, and the public key cache is verified as derived from the private key. If stronger isolation is needed later, per-profile key overrides can be added on top.
+- TOFU (Trust On First Use) known-host records stay bound strictly to the SSH gateway's `host:port`, with no binding to profile names. Multiple profiles pointing at the same gateway share the same trusted host fingerprint.
 
-**切换流程**：
+**Switch flow**:
 
-1. 记录并保存当前 profile 的 `lastUsedAt` 及必要的运行时状态。
-2. 停止当前活跃的 SSE 事件流。
-3. 若当前 profile 启用了 SSH，主动断开现有的 SSH tunnel。
-4. 加载并应用目标 profile 的 `serverURL`、Basic Auth 认证信息与 transport 配置。
-5. 清空当前的 session 选择状态，并针对新 host 重新拉取 health、projects 及 sessions 数据。
-6. 若新 profile 属于 SSH Tunnel 模式，尝试自动建立 tunnel 连接；若建连失败则进入 `.error` 状态，但保持 Settings 界面可交互，不阻塞用户操作。
+1. Record and save the current profile's `lastUsedAt` and any necessary runtime state.
+2. Stop the currently active SSE event stream.
+3. If the current profile uses SSH, tear down the existing SSH tunnel.
+4. Load and apply the target profile's `serverURL`, Basic Auth credentials, and transport configuration.
+5. Clear the current session selection and re-fetch health, projects, and sessions for the new host.
+6. If the new profile is SSH Tunnel mode, attempt to establish the tunnel automatically; on failure, enter the `.error` state while keeping Settings interactive and never blocking the user.
 
-**Import Host Config 格式（不含 secret）**：
+**Import Host Config format (no secrets)**:
 
 ```json
 {
@@ -246,7 +246,7 @@ struct BasicAuthConfig: Codable, Equatable {
 }
 ```
 
-Direct 示例：
+Direct example:
 
 ```json
 {
@@ -257,13 +257,13 @@ Direct 示例：
 }
 ```
 
-Import 配置中不包含私钥（private key）、provider token 或 Basic Auth 密码。在完成 SSH 配置导入后，仍要求用户复制本设备的 public key 并提交给管理员。
+The import config contains no private key, provider token, or Basic Auth password. After an SSH config import, the user is still asked to copy this device's public key and hand it to the administrator.
 
-**Host Config 导出格式**：
+**Host Config export format**:
 
-Host Config JSON 直接由已持久化的 `HostProfile` 动态生成，系统始终以 `HostProfile` 作为唯一的持久化单一事实来源（source of truth），客户端不会将原始导入的 JSON 留存为第二份状态副本。导出的 JSON 主要方便用户与管理员核对网络参数，因此必须严格剔除所有敏感密钥与运行时临时字段：Basic Auth 密码、Keychain password ID、SSH 私钥以及 `SSHTunnelConfig.isEnabled` 均不得包含在导出结果中。
+The Host Config JSON is generated dynamically from the persisted `HostProfile`, and `HostProfile` remains the single persisted source of truth; the client never keeps the originally imported JSON as a second state copy. The exported JSON mainly helps users and administrators verify network parameters, so it must strictly exclude every sensitive key and runtime field: the Basic Auth password, Keychain password ID, SSH private key, and `SSHTunnelConfig.isEnabled` must all stay out of the export.
 
-**Runtime 连接诊断**：
+**Runtime connection diagnostics**:
 
 ```swift
 struct ConnectionDiagnostic: Codable, Equatable {
@@ -286,35 +286,35 @@ enum ConnectionPhase: String, Codable {
 }
 ```
 
-`ConnectionDiagnostic` 属于纯粹的 App 运行时状态，不需要进行本地持久化。每次切换 host 时该状态会自动重置；后续由 `testConnection()` 测试流程以及整体的 refresh/bootstrap 初始化流程负责更新 phase、message 与 recovery hint。在 UI 呈现上，必须将底层错误转化为用户可理解且具备行动指导意义的操作提示，严禁直接展示类似 `APIError error 0` 或 `NSURLErrorDomain -1004` 等裸底层错误字符串。常见的映射规则包括：Basic Auth 401/403 映射为检查用户名与密码；connection refused / cannot connect 映射为检查服务器地址、当前网络连接或本地 tunnel 状态；SSH tunnel error 则映射为检查 gateway 状态、设备公钥配置及分配的 remote port。
+`ConnectionDiagnostic` is pure app runtime state and needs no local persistence. The state resets automatically on every host switch; the `testConnection()` flow and the overall refresh/bootstrap initialization then update the phase, message, and recovery hint. In the UI, underlying errors must be translated into user-understandable, actionable guidance; raw strings such as `APIError error 0` or `NSURLErrorDomain -1004` must never be shown. Common mappings: Basic Auth 401/403 maps to checking the username and password; connection refused / cannot connect maps to checking the server address, current network, or local tunnel state; an SSH tunnel error maps to checking the gateway status, the device public key configuration, and the assigned remote port.
 
-**Host Detail 交互契约**：
+**Host Detail interaction contract**:
 
-点击 Hosts 列表项的主交互行为是进入 Host Detail 详情页，而非直接触发 host 切换。切换 host 必须在详情页内通过点击 `Use This Host` 按钮显式完成。Host Detail 会根据当前 `HostProfile` 的配置，完整展示 Direct 或 SSH Tunnel 的各项关键参数，并提供 `Copy Host Config JSON` 复制功能；对于 SSH Tunnel profile，页面还会额外提供 `Copy This Device Public Key` 便捷入口。
+The primary interaction for tapping a Hosts list item is entering the Host Detail page; host switching happens only through the explicit `Use This Host` button inside the detail page. Host Detail shows every key parameter of the current `HostProfile` for Direct or SSH Tunnel and provides `Copy Host Config JSON`; SSH Tunnel profiles additionally get a convenient `Copy This Device Public Key` entry.
 
-### 3.6 SSH 隧道架构
+### 3.6 SSH Tunnel Architecture
 
-主要用于远程访问场景，借助 SSH gateway 作为中间跳板，安全转发到用户独立的 OpenCode 实例。
+For remote access scenarios: an SSH gateway acts as an intermediate jump host that securely forwards to the user's dedicated OpenCode instance.
 
-**网络拓扑**：
+**Network topology**:
 
 ```
 ┌─────────────┐      SSH Tunnel       ┌─────────────┐      internal      ┌─────────────┐
 │  iOS App    │ ───────────────────▶  │  Gateway    │ ─────────────────▶ │  OpenCode   │
-│ 127.0.0.1   │   DirectTCPIP         │ 127.0.0.1   │    (预先建立)       │ OpenCode    │
+│ 127.0.0.1   │   DirectTCPIP         │ 127.0.0.1   │  (pre-established) │ OpenCode    │
 │   :4096     │   :4096 → :19001      │   :19001    │                    │   :4096     │
 └─────────────┘                       └─────────────┘                    └─────────────┘
 ```
 
-**数据模型**：
+**Data model**:
 
 ```swift
 struct SSHTunnelConfig: Codable {
     var isEnabled: Bool = false
-    var host: String = ""           // SSH gateway 地址
-    var port: Int = 8006            // SSH 端口
-    var username: String = "opencode" // SSH 用户名
-    var remotePort: Int = 19001     // 管理员分配的 remote port
+    var host: String = ""           // SSH gateway address
+    var port: Int = 8006            // SSH port
+    var username: String = "opencode" // SSH username
+    var remotePort: Int = 19001     // remote port assigned by the administrator
 }
 
 enum SSHConnectionStatus {
@@ -325,80 +325,80 @@ enum SSHConnectionStatus {
 }
 ```
 
-**密钥管理**：
+**Key management**:
 
 ```swift
 enum SSHKeyManager {
-    // 生成 Ed25519 密钥对
+    // Generate an Ed25519 key pair
     static func generateKeyPair() throws -> (privateKey: Data, publicKey: String)
     
-    // 私钥存 Keychain（读写均传播 OSStatus；loadData 仅在 errSecItemNotFound 时返回 nil）
+    // Private key stored in Keychain (save and load both propagate OSStatus; loadData returns nil only on errSecItemNotFound)
     static func savePrivateKey(_ key: Data) throws
     static func loadPrivateKey() throws -> Data?
     
-    // 公钥用于显示/复制（只读，不生成；先做一致性校验）
+    // Public key for display/copy (read-only, never generated; consistency is verified first)
     static func getPublicKey() -> String?
     
-    // 只读获取：校验缓存公钥确由私钥派生，不匹配时以私钥为准修复缓存；
-    // Keychain 暂不可读抛 SSHError.keyUnavailable，私钥不存在抛 SSHError.keyNotFound
+    // Read-only fetch: verify the cached public key is derived from the private key, repairing the cache from the private key on mismatch
+    // Keychain temporarily unreadable throws SSHError.keyUnavailable; a missing private key throws SSHError.keyNotFound
     static func getKeyPair() throws -> String
 
-    // 引导：仅当私钥条目确实缺失（errSecItemNotFound）时生成新密钥对；
-    // 其他 Keychain 错误抛 SSHError.keyUnavailable，不触碰已存密钥
+    // Bootstrap: generate a new key pair only when the private key item is genuinely missing (errSecItemNotFound)
+    // Other Keychain errors throw SSHError.keyUnavailable; already-stored keys are left untouched
     static func ensureKeyPair() throws -> String
 
-    // 密钥轮换（唯一由用户显式触发的生成路径）
-    static func rotateKey() throws -> String  // 返回新公钥
+    // Key rotation (the only generation path triggered explicitly by the user)
+    static func rotateKey() throws -> String  // Returns the new public key
 }
 ```
 
-**安全考虑**：
+**Security considerations**:
 
-1. **私钥保护**：采用 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` 策略存储，首次解锁后（含锁屏状态）即可读取，支持重启后的后台连接，且不随 iCloud Keychain 迁移到其他设备；`KeychainHelper` 的 save/load 传播 OSStatus，写失败不再被静默吞掉
-2. **公钥传输**：采用用户手动复制粘贴的方式，App 不会通过任何网络接口主动上传公钥
-3. **TOFU**：首次连接自动信任并保存服务器指纹（按 host:port 绑定），后续 mismatch 直接失败并提示 reset trusted host
-4. **超时**：连接超时 30 秒，自动断开并提示
+1. **Private key protection**: stored with the `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` policy, readable after first unlock (including while the screen is locked), supporting background connections after reboot, and never migrated to other devices via iCloud Keychain; `KeychainHelper` save/load propagates OSStatus, so write failures are no longer swallowed silently
+2. **Public key transfer**: the user copies and pastes manually; the app never uploads the public key over any network interface
+3. **TOFU**: the first connection trusts and saves the server fingerprint automatically (bound to host:port); a later mismatch fails immediately and prompts to reset the trusted host
+4. **Timeout**: connections time out after 30 seconds, disconnecting automatically with a notice
 
-**错误处理**：
+**Error handling**:
 
-| 错误 | 原因 | 用户提示 |
+| Error | Cause | User message |
 |------|------|----------|
-| 密钥未授权 | 公钥未添加到 VPS | "请先添加公钥到服务器的 authorized_keys" |
-| 连接超时 | 网络问题或地址错误 | "连接超时，请检查网络和服务器地址" |
-| 认证失败 | 私钥不匹配 | "认证失败，请确认公钥已正确添加" |
-| 密钥暂不可用 | Keychain 暂不可读（如设备锁定期间） | "SSH 密钥暂时不可用。请解锁设备后重试" |
+| Key unauthorized | The public key has not been added to the VPS | "Add the public key to the server's authorized_keys first" |
+| Connection timeout | Network problem or wrong address | "Connection timed out. Check the network and server address" |
+| Authentication failed | Private key mismatch | "Authentication failed. Confirm the public key was added correctly" |
+| Key temporarily unavailable | Keychain temporarily unreadable (for example while the device is locked) | "The SSH key is temporarily unavailable. Unlock the device and try again" |
 
-**SSH UX 补充**：
-- 在 Settings 页面内提供配置引导（setup guide）：指导用户将设备公钥复制给管理员，并填入管理员返回的 assigned remote port
-- 公钥复制入口常驻，不依赖 tunnel enable 状态
-- SSH Host Profile 的 `Test Connection` 先建立 SSH tunnel，并等本地 `127.0.0.1:4096` listener ready；只有 tunnel ready 后才请求 `/global/health`
-- tunnel 建立失败时把 SSH 错误写入 connection error，避免只显示 disconnected
+**SSH UX notes**:
+- A setup guide inside Settings walks the user through copying the device public key to the administrator and entering the assigned remote port they return
+- The public key copy entry point is always present, independent of the tunnel enable state
+- An SSH Host Profile's `Test Connection` first establishes the SSH tunnel and waits for the local `127.0.0.1:4096` listener to be ready; `/global/health` is requested only once the tunnel is ready
+- When tunnel establishment fails, the SSH error is written into the connection error so the UI shows more than a plain disconnected state
 
-### 3.7 Markdown 图片解析契约
+### 3.7 Markdown Image Resolution Contract
 
-Markdown 文本中引用的图片通常分为两类：
+Images referenced in Markdown text fall into two groups:
 
-1. **公网 URL**：以 `https://...` 开头，直接交给系统的标准网络图片加载链路处理即可
-2. **workspace 内相对图片**：例如 `../assets/timeline_40d.png`，这类图片必须由客户端自行完成路径解析与拉取
+1. **Public URLs**: starting with `https://...`, handed straight to the system's standard network image loading path
+2. **Workspace-relative images**: for example `../assets/timeline_40d.png`; the client must resolve and fetch these itself
 
-针对第二类，RFC 约束如下：
+For the second group, this RFC sets the following constraints:
 
-- Files 预览和 Chat 消息渲染都必须支持 repo 内相对图片，不允许出现“文件预览能看见、聊天里看不见”的双重语义
-- 解析相对图片路径时，必须综合结合当前文档路径 `markdownFilePath` 与工作区根目录 `workspaceDirectory` 进行计算
-- 路径归一化后的最终请求参数必须为 **workspace-relative path**，再交给 `/file/content` API 获取内容
-- Chat 渲染场景下，允许预先将图片内容转为 `data:` URI 后再传递给 MarkdownUI；但若采用该方案，渲染端必须显式挂载能处理 `data:` URL 的 image provider
-- Files 预览场景若使用 `imageBaseURL`，仍然需要在 image provider 中做 workspace-relative 归一化，避免绝对路径穿透到 API 层
+- Both Files preview and Chat message rendering must support repo-relative images; a split where an image shows in the file preview but not in chat is not allowed
+- Resolving a relative image path must combine the current document path `markdownFilePath` with the workspace root `workspaceDirectory`
+- After normalization, the final request parameter must be a **workspace-relative path**, passed to the `/file/content` API to fetch the content
+- In Chat rendering, converting image content to a `data:` URI before handing it to MarkdownUI is allowed; when using that approach, the rendering side must explicitly attach an image provider that handles `data:` URLs
+- If Files preview uses an `imageBaseURL`, the image provider still must normalize to workspace-relative paths so absolute paths never leak into the API layer
 
-这条契约的目标是：无论同一份 Markdown 报告从 Files 打开，还是由 AI 在 Chat 中直接输出，都应该得到一致的图片结果。
+The goal of this contract: the same Markdown report must produce the same images whether opened from Files or output directly by the AI in Chat.
 
-### 4. 状态管理
+### 4. State Management
 
 ```swift
 @Observable
 final class AppState {
     var hostProfiles: [HostProfile]
     var currentHostProfileID: UUID
-    var serverURL: String          // 当前 profile 展开后的 runtime URL
+    var serverURL: String          // runtime URL expanded from the current profile
     var isConnected: Bool
     var sessions: [Session]
     var currentSessionID: String?
@@ -407,100 +407,100 @@ final class AppState {
     var partsByMessage: [String: [Part]]
     var selectedModelIndex: Int
     
-    // Agent 选择（2026-02 新增）
-    var agents: [AgentInfo]           // 从 GET /agent 获取
-    var selectedAgentIndex: Int       // 当前选中的 agent
+    // Agent selection (added 2026-02)
+    var agents: [AgentInfo]           // fetched from GET /agent
+    var selectedAgentIndex: Int       // currently selected agent
     
-    // SessionStore, MessageStore, FileStore, TodoStore 等
+    // SessionStore, MessageStore, FileStore, TodoStore, etc.
 }
 ```
 
-- 单一 `AppState` 持有全局状态，各业务子 store 分别接管 session/message/file/todo 等领域逻辑
-- SSE 事件根据 `type` 类型分发，实时更新关联状态字段
-- SwiftUI View 层可通过 `@Environment` 依赖注入或显式传参访问状态对象
+- A single `AppState` holds global state, while per-domain sub-stores take over session/message/file/todo logic
+- SSE events dispatch on `type` and update the related state fields in real time
+- SwiftUI views access state objects through `@Environment` injection or explicit parameters
 
-#### 4.1 Agent 数据模型
+#### 4.1 Agent Data Model
 
 ```swift
 struct AgentInfo: Codable, Identifiable {
     var id: String { name }
-    let name: String              // agent 名称，如 "Sisyphus (Ultraworker)"
-    let description: String?      // 描述
-    let mode: String?             // "primary" 或 "subagent"
-    let hidden: Bool?             // 是否隐藏（隐藏的 agent 不在 UI 显示）
+    let name: String              // agent name, e.g. "Sisyphus (Ultraworker)"
+    let description: String?      // description
+    let mode: String?             // "primary" or "subagent"
+    let hidden: Bool?             // hidden flag (hidden agents are not shown in the UI)
 }
 ```
 
 #### 4.2 Agent API
 
-| 方法 | 路径 | 说明 | 响应 |
+| Method | Path | Description | Response |
 |------|------|------|------|
-| GET | `/agent` | 列出所有 Agent | `AgentInfo[]` |
+| GET | `/agent` | List all agents | `AgentInfo[]` |
 
-- App 启动时后台调用此 API 获取 agent 列表
-- 过滤 `hidden != true` 的 agents 后显示在 UI
-- 默认选择第一个 primary agent（通常是 `Sisyphus`）
+- The app calls this API in the background at startup to get the agent list
+- Agents with `hidden != true` are filtered out before display
+- The first primary agent is selected by default (usually `Sisyphus`)
 
-#### 4.3 Project 选择（Workspace 过滤）
+#### 4.3 Project Selection (Workspace Filtering)
 
-**背景**：OpenCode Server 支持多项目，`GET /session` 默认返回 server 当前项目的 sessions。Web 端可切换项目，iOS 端需支持按项目过滤，否则只能看到 server 当前项目的 sessions。
+**Background**: the OpenCode Server supports multiple projects, and `GET /session` defaults to the server's current project. The web client can switch projects; the iOS client needs per-project filtering too, or it can only ever see the server's current project.
 
-**API**：
+**API**:
 
-| 方法 | 路径 | 说明 | 响应 |
+| Method | Path | Description | Response |
 |------|------|------|------|
-| GET | `/project` | 列出服务器已知的项目 | `Project[]` |
-| GET | `/project/current` | 当前项目 | `Project` |
-| GET | `/session?directory=<path>&limit=<n>` | 按 worktree 过滤 sessions | `Session[]` |
+| GET | `/project` | List projects known to the server | `Project[]` |
+| GET | `/project/current` | Current project | `Project` |
+| GET | `/session?directory=<path>&limit=<n>` | Filter sessions by worktree | `Session[]` |
 
-**数据模型**：
+**Data model**:
 
 ```swift
 struct Project: Codable, Identifiable {
-    let id: String           // 通常为 git commit hash
-    let worktree: String     // 绝对路径，如 /Users/xxx/co/knowledge_working
-    let vcs: String?         // "git" 等
+    let id: String           // usually a git commit hash
+    let worktree: String     // absolute path, e.g. /Users/xxx/co/knowledge_working
+    let vcs: String?         // "git" and similar
     let time: ProjectTime?
 }
 
-// 展示名称：worktree 最后一段，如 knowledge_working
+// Display name: last segment of the worktree, e.g. knowledge_working
 func projectDisplayName(_ worktree: String) -> String {
     (worktree as NSString).lastPathComponent
 }
 ```
 
-**状态**：
+**State**:
 
 ```swift
-var projects: [Project] = []              // 从 GET /project 拉取
-var selectedProjectWorktree: String?      // nil = 使用 server 默认（不传 directory）
-var customProjectPath: String = ""        // "Custom path" 时用户输入的路径
+var projects: [Project] = []              // fetched from GET /project
+var selectedProjectWorktree: String?      // nil = use the server default (no directory passed)
+var customProjectPath: String = ""        // path the user types for "Custom path"
 ```
 
-**流程**：
-1. 连接成功后调用 `GET /project` 填充 Picker
-2. 用户选择：从列表选 → `selectedProjectWorktree = project.worktree`；选 "Custom path" → 展开 TextField，`selectedProjectWorktree = customProjectPath`
-3. `loadSessions()` 时：若 `selectedProjectWorktree != nil`，请求 `GET /session?directory=xxx&limit=100`；否则发起无参数的 `GET /session` 请求
-4. 持久化：`selectedProjectWorktree`、`customProjectPath` 存 UserDefaults
+**Flow**:
+1. After a successful connection, call `GET /project` to fill the Picker
+2. User selection: picking from the list sets `selectedProjectWorktree = project.worktree`; picking "Custom path" expands a TextField and sets `selectedProjectWorktree = customProjectPath`
+3. In `loadSessions()`: with `selectedProjectWorktree != nil`, request `GET /session?directory=xxx&limit=100`; otherwise issue a bare `GET /session`
+4. Persistence: `selectedProjectWorktree` and `customProjectPath` are stored in UserDefaults
 
-#### 4.3.1 Session 创建仅限 Server default
+#### 4.3.1 Session Creation Only Under Server Default
 
-**背景**：`POST /session` 不支持传 directory，server 在其 current project（由启动位置或 Web/TUI 最后使用决定）下创建 session。iOS 的 Project 选择器只影响列表过滤，不改变创建目标。若允许在「选了具体 project」时创建，新 session 会落在 server default，不在过滤结果中，导致消失。
+**Background**: `POST /session` accepts no directory, and the server creates the session under its current project (determined by the startup location or the last use in Web/TUI). The iOS Project selector only affects list filtering and never changes the creation target. If creation were allowed while a specific project is selected, the new session would land in the server default, fall outside the filtered results, and appear to vanish.
 
-**实现**：仅当 `effectiveProjectDirectory == nil`（用户选 Server default）时允许创建。当用户选了具体 project 时，新建按钮置灰，旁加 info 图标，点击显示提示：需用命令行启动 OpenCode 并指定不同的工作目录，然后在此选 Server default 再创建。`canCreateSession` 控制按钮可用性。
+**Implementation**: creation is allowed only when `effectiveProjectDirectory == nil` (the user chose Server default). With a specific project selected, the new-session button grays out with an info icon beside it; tapping the icon explains that OpenCode must be started from the command line with a different working directory, after which Server default can be selected here to create. `canCreateSession` drives button availability.
 
 #### 4.4 Session Deep Link
 
-**协议**：V1 只接受 `opencode://session/<session_id>`。`OpenCodeDeepLinkParser` 是无副作用纯函数，要求 scheme 和 host 分别为 `opencode`、`session`，path 只有一个 segment，session ID 以 `ses_` 开头且后续仅含 ASCII 字母、数字、下划线或连字符。parser 拒绝 userinfo、port、query、fragment、多层 path、控制字符、Unicode、重复 percent encoding 和过长 ID。未知 scheme 不由 deep-link router 处理。
+**Protocol**: V1 accepts only `opencode://session/<session_id>`. `OpenCodeDeepLinkParser` is a pure function with no side effects. It requires the scheme and host to be `opencode` and `session` respectively, a path with exactly one segment, and a session ID starting with `ses_` followed only by ASCII letters, digits, underscores, or hyphens. The parser rejects userinfo, port, query, fragment, multi-segment paths, control characters, Unicode, double percent-encoding, and overlong IDs. Unknown schemes are not handled by the deep-link router.
 
-**实现分层**：
+**Implementation layering**:
 
-- `Utils/OpenCodeDeepLink.swift` 定义 URI contract 和 parser。
-- `AppState+DeepLinks.swift` 持有 `pendingDeepLink`、`deepLinkRouteState`、全局错误和 route generation token。
-- `ContentView.onOpenURL` 处理系统 cold/warm launch；`MessageRowView` 的 `OpenURLAction` 先识别 OpenCode link，再回落到既有 HTTP/workspace link resolver。
-- `Info.plist` 通过 `CFBundleURLTypes` 注册 `opencode` scheme；Debug 和 Release 共用同一配置。
+- `Utils/OpenCodeDeepLink.swift` defines the URI contract and the parser.
+- `AppState+DeepLinks.swift` holds `pendingDeepLink`, `deepLinkRouteState`, the global error, and the route generation token.
+- `ContentView.onOpenURL` handles system cold/warm launch; the `OpenURLAction` in `MessageRowView` recognizes OpenCode links first, then falls back to the existing HTTP/workspace link resolver.
+- `Info.plist` registers the `opencode` scheme through `CFBundleURLTypes`; Debug and Release share the same configuration.
 
-**解析状态机**：
+**Parsing state machine**:
 
 ```text
 receive URL
@@ -512,89 +512,89 @@ receive URL
   -> select session + hydrate Chat + reload Files
 ```
 
-客户端必须在 `GET /session/:id` 成功前保留原 `currentSessionID` 和 messages。目标 session 不要求已进入当前 100 条列表窗口；验证后先按 `Session.directory` 设置已知 project 或 custom project，再 upsert 并调用现有 session hydration。Session 列表刷新需保留当前已验证 session，Files root/children 请求使用 `effectiveProjectDirectory`。
+The client must keep the original `currentSessionID` and messages until `GET /session/:id` succeeds. The target session does not need to be inside the current 100-entry list window; after verification, the client first sets the known project or custom project from `Session.directory`, then upserts and runs the existing session hydration. The session list refresh must retain the current verified session, and Files root/children requests use `effectiveProjectDirectory`.
 
-**生命周期与并发**：cold launch 或 SSH 恢复期间只保存 pending route，连接成功后消费。App 进入后台或切换 Host 时更新 generation token，使旧 Host 的 in-flight 响应失效，同时保留最后一个 pending link 给新连接处理。新链接覆盖旧链接，不建立队列；同一 session 重复点击幂等。404 显示“当前 Host 不可用”，其他网络错误显示通用打开失败，二者均不切换上下文。
+**Lifecycle and concurrency**: during cold launch or SSH recovery, only the pending route is stored and it is consumed once the connection succeeds. Entering the background or switching Hosts bumps the generation token, invalidating in-flight responses from the old Host while keeping the last pending link for the new connection. A new link replaces the old one with no queue built up; repeated taps on the same session are idempotent. A 404 shows "unavailable on the current Host" and other network errors show a generic open failure; neither switches context.
 
-**安全边界**：URL 不接受 server、Host Profile、凭证、模型、prompt、tool action 或任意 command。Deep link 只能由用户点击或系统显式唤起，不能因 Markdown 渲染自动执行。V1 不跨 Host 搜索，不恢复离线 archive DB，不支持 `?message=`。
+**Security boundary**: the URL accepts no server, Host Profile, credentials, model, prompt, tool action, or arbitrary command. A deep link runs only when the user taps it or the system invokes it explicitly; it must never execute automatically from Markdown rendering. V1 does not search across Hosts, does not restore an offline archive DB, and does not support `?message=`.
 
-**验证**：unit tests 覆盖 parser 白名单、404/断连、project 切换、列表窗口保留和 route invalidation；fixture XCUITest 覆盖 assistant Markdown 点击与 cold pending route。完整系统验收使用 Simulator `simctl openurl` 和独立临时 server，不触碰 live `4096`。Agent 搜索输出另用 synthetic archive 验证 source、frontmatter session ID、候选去重和证据邻接；真实 Agent acceptance 保持 opt-in，不进入每次 unit test。
+**Verification**: unit tests cover the parser whitelist, 404/disconnection, project switching, list window retention, and route invalidation; fixture XCUITests cover assistant Markdown taps and the cold pending route. Full system acceptance uses the Simulator's `simctl openurl` and a separate temporary server, never touching the live `4096`. Agent search output is verified separately against a synthetic archive for source, frontmatter session ID, candidate dedup, and evidence adjacency; real Agent acceptance stays opt-in and stays out of every unit test run.
 
-### 5. 消息与文档 UI
+### 5. Message and Document UI
 
-#### 5.1 消息流
+#### 5.1 Message Stream
 
-- **布局**：OpenCode 风格，无左右气泡；人类消息灰色背景，AI 消息白/透明
-- **单位语义**：一个 message 可包含多个 part（tool/reasoning/text 等）。tool 调用计入 part，不单独计为 message
-- **Part 渲染**：text (Markdown)、reasoning (折叠)、tool (卡片)、patch (跳转 Files)。tool/patch 若含文件路径，点击可「在 File Tree 中打开」预览；其中 `todowrite` tool 需渲染为 Task List（todo）视图，并响应 SSE `todo.updated`。Todo 仅在 tool 卡片内展示，不在 Chat 顶部常驻（方案 B）
-- **图像类 tool output**：若 tool 结果关联到图像文件，优先渲染内联缩略图而不是 raw base64；点击后进入可缩放的全屏预览
-- **iPad 大屏密度**：在 `horizontalSizeClass == .regular` 时，tool/patch/permission 卡片可用三列网格横向填充；text part 仍整行显示（避免阅读断裂）
-- **流式（Think Streaming）**：`message.part.updated` 带 `delta` 时追加到对应 Part，实现打字机效果；无 delta 时全量 reload。Tool 卡片：running 展开、completed 默认收起
-- **自动滚动**：仅在用户当前位于底部附近时跟随新的 streaming 文本和卡片更新；用户主动向上浏览时停止自动跟随，避免抢走阅读位置
-- **Activity Row 收敛**：状态显示采用 "运行证据优先"。若检测到 running/pending tool 或 streaming 增量，即使瞬时收到 `session.status=idle` 也保持 running，避免提前 completed
-- **主题**：跟随 `@Environment(\.colorScheme)`，Light/Dark
+- **Layout**: OpenCode style with no left/right bubbles; human messages on a gray background, AI messages white/transparent
+- **Unit semantics**: one message can contain multiple parts (tool/reasoning/text and so on). A tool call counts as a part and is not counted as its own message
+- **Part rendering**: text (Markdown), reasoning (collapsed), tool (card), patch (jump to Files). When a tool/patch contains a file path, tapping offers "Open in File Tree" preview; the `todowrite` tool renders as a Task List (todo) view and responds to the SSE `todo.updated` event. The todo shows only inside the tool card, with no persistent block at the top of Chat (option B)
+- **Image tool output**: when a tool result references an image file, render an inline thumbnail in place of the raw base64; tapping opens a zoomable full-screen preview
+- **iPad large-screen density**: with `horizontalSizeClass == .regular`, tool/patch/permission cards can fill the width in a three-column grid; the text part still spans the full row (keeping reading unbroken)
+- **Streaming (Think Streaming)**: `message.part.updated` with a `delta` appends to the matching Part for a typewriter effect; without a delta the Part reloads fully. Tool cards: expanded while running, collapsed by default once completed
+- **Auto-scroll**: follow new streaming text and card updates only while the user is near the bottom; stop following when the user scrolls up, so their reading position is never stolen
+- **Activity Row convergence**: status display follows "runtime evidence first". While a running/pending tool or streaming delta is detected, the row stays running even if `session.status=idle` arrives momentarily, avoiding a premature completed
+- **Theme**: follows `@Environment(\.colorScheme)`, Light/Dark
 
-#### 5.1.1 Chat 文字选择（textSelection）— 设计
+#### 5.1.1 Chat Text Selection (textSelection): Design
 
-**原则**：仅对两类内容启用选择，其余区域禁用，避免手势冲突、缩小可选范围。
+**Principle**: text selection is enabled for only two kinds of content and disabled everywhere else, avoiding gesture conflicts and keeping the selectable range small.
 
-| 区域 | 是否可选 | 说明 |
+| Region | Selectable | Notes |
 |------|----------|------|
-| 用户消息正文 | ✅ | 用户打出去的消息，可复制 |
-| AI 最终回复（text part） | ✅ | AI 的 response 文本，可复制 |
-| 思考过程（reasoning） | ❌ | 包括 streaming 时的 think |
-| 工具调用（tool 卡片） | ❌ | Reason、Command/Input、Output、Path、todo 等 |
-| Patch 卡片 | ❌ | 按钮为主，无需选择 |
+| User message body | ✅ | The user's own message, copyable |
+| AI final reply (text part) | ✅ | The AI's response text, copyable |
+| Reasoning | ❌ | Including think content while streaming |
+| Tool calls (tool cards) | ❌ | Reason, Command/Input, Output, Path, todo, and more |
+| Patch cards | ❌ | Mostly buttons, no selection needed |
 
-**实现**：`MessageRowView` 的 `markdownText` 对用户消息和 AI text part 使用 `.textSelection(.enabled)`；`ScrollView` 不设全局 textSelection；`ToolPartView`、`StreamingReasoningView`、`TodoListInlineView` 不启用 textSelection。
+**Implementation**: `MessageRowView`'s `markdownText` applies `.textSelection(.enabled)` to user messages and AI text parts; the `ScrollView` sets no global textSelection; `ToolPartView`, `StreamingReasoningView`, and `TodoListInlineView` do not enable textSelection.
 
-#### 5.1.2 Think Streaming 实现
+#### 5.1.2 Think Streaming Implementation
 
-- **Delta 处理**：`handleSSEEvent` 收到 `message.part.updated` 时，若 `properties.delta` 存在，则定位 `messageID`/`partID` 对应 Part，将 delta 追加到 text；否则执行 `loadMessages()` 全量刷新
-- **Tool 折叠**：`ToolPartView` 根据 `part.state.status`：`running` 时 `isExpanded = true`，`completed` 时 `isExpanded = false`（默认），用户可手动切换
-- **限制**：Tool output 的实时流式（terminal 逐行）当前 API 不支持，见 PRD 调研
+- **Delta handling**: when `handleSSEEvent` receives `message.part.updated` and `properties.delta` exists, it locates the Part by `messageID`/`partID` and appends the delta to the text; otherwise it runs a full `loadMessages()` refresh
+- **Tool collapsing**: `ToolPartView` follows `part.state.status`: `running` sets `isExpanded = true`, `completed` sets `isExpanded = false` (the default); the user can toggle manually
+- **Limitation**: real-time line-by-line streaming of tool output (terminal style) is not supported by the current API, per the PRD research
 
-#### 5.2 文档审查
+#### 5.2 Document Review
 
-- **Markdown 展示**：Preview 为主，可切换 Markdown 源码
-- **Diff 高亮**：优先在 Preview 内高亮 changes；若实现困难，则在 Markdown 内高亮
-- **入口**：Files Tab → 选文件 → 预览
-- **图片预览**：文件预览与 tool output 统一使用图像分支；初始为 fit-to-screen，支持 pinch、drag、double-tap zoom 和系统 share sheet
+- **Markdown display**: Preview first, switchable to Markdown source
+- **Diff highlighting**: highlight changes in Preview first; if that proves too hard, highlight within the Markdown source
+- **Entry point**: Files Tab → pick a file → preview
+- **Image preview**: file previews and tool output share the same image branch; starting at fit-to-screen, with pinch, drag, double-tap zoom, and the system share sheet
 
-### 6. 权限与输入
+### 6. Permissions and Input
 
-- **Session 列表**：列出 workspace 下所有已有 Session，作为连接与解析的验证手段
-- **Session 列表样式**：避免系统默认链接蓝；文本用中性色，当前 Session 用背景高亮
-- **权限**：`permission.asked` 时展示卡片，用户手动批准/拒绝，调用 `POST /session/:id/permissions/:permissionID`
-- **Question**：`question.asked` 时展示 question card；启动时通过 `GET /question` 补拉 pending questions；回答与拒绝分别调用 `/question/{id}/reply`、`/question/{id}/reject`
-- **Composer**：采用 `voice rail + text review field` 两行结构。voice rail 在上方承载语音 transport、waveform/status、转写等待恢复和 preserved-audio retry；text review field 在下方承载转写文本、人工修正、fallback 打字和固定 send 按钮。语音转写或 preserved-audio retry 流式返回 partial transcript 时，text review field 自动滚到末尾，保持最新文字可见；普通手动输入和草稿恢复不强制滚动。busy 时 send 仍调用 `prompt_async`，消息由服务端排队
-- **草稿**：按 sessionID 持久化未发送输入；切换 session 可恢复；发送成功后清空
-- **模型选择**：按 sessionID 记忆当前选择的模型；切换 Session 自动恢复（避免全局 model 覆盖）
-- **Agent 选择**：按 sessionID 记忆当前选择的 agent（与 model 同理）；发送消息时在 body 中携带 `agent: string` 字段
-- **语音输入**：开始录音时创建 VoiceFlowKit realtime session，`AVAudioEngine` 输出 PCM16 mono 24kHz chunk；Kit 内部把每个 chunk 写入临时 `.pcm` cache 并发送到当前 WebSocket。录音期间 voice rail waveform 消费 `VoiceFlowMicrophone.audioLevel` 的真实 0..1 smoothed mic level。heartbeat / send failure 触发 Kit recovery：取消坏 session，创建新 session，从 cache 文件 offset 0 顺序 replay 到当前文件末尾，之后继续 live 发送。停止录音时等待恢复完成，发送 `commit` / `stop`，将 transcript 追加到 text review field。转写等待时显示 processing waveform 和 `Stop transcription wait`，点击后调用 `abortPreservingAudio()` 立即释放 UI 并保留 cache；preserved-audio 状态下左侧 transport 显示 `Retry this segment` 图标按钮，点击后用 `transcribe(preservedAudio:)` 重新识别同一段 PCM，右侧动作显示 `Discard audio` 用于放弃缓存并退出恢复状态。retry 失败后保留 cache，用户可以继续 retry 或 discard。Base URL 与 token 在 Settings → Speech Recognition 配置并存 Keychain
-- **Agent abort**：`Interrupt agent` 作为 composer 状态行 `⋯` 菜单项调用 `POST /session/:id/abort`。它是低频 escape hatch，不和语音转写恢复共用 transport slot 或 stop glyph
-- **历史加载交互**：Chat 顶部显示“下拉加载更多历史消息”提示；加载中显示“正在加载更多历史消息...”，支持中英文本地化。加载更多通过扩大 `GET /session/:id/message?limit=` 的窗口实现，并记录请求 limit、返回 message 数量和 fallback decoder 丢弃数量，便于排查旧历史消息形态导致的分页无感问题。Message part 的 `files` 字段兼容字符串数组和缺少 diff 计数的对象，避免旧 patch/tool 记录阻断更早历史展示。
-- **Session Archive**：Session List 按 Active / Archived 两个分区展示。归档语义复用 `PATCH /session/:id`：Archive 写入正数 archived timestamp，Restore 写入 `-1` 作为 legacy restore sentinel；客户端按 `time.archived > 0` 判断 Archived。客户端不把 archive 当作 delete 的变体。Archive / Restore 成功后使用返回的 `Session` 更新本地列表，并重新计算 Active / Archived 分区。Archive 对 session subtree 递归生效，顺序为 children-first、parent-last，避免父 session 先隐藏后 active children 被临时提升为 root；Restore 顺序为 parent-first、children-after，避免子 session 在父级仍 archived 时临时游离。iPhone sheet 与 iPad sidebar 使用同一组规则：leading swipe 为 Archive/Restore，trailing swipe 为 Delete；所有 swipe action 禁用 full swipe，Delete 不弹确认框。Session list 分页使用显式“Load more sessions”行，而不是底部 `onAppear` 自动加载，避免默认折叠 archived 区域时自动拉取大量不可见历史 session。本轮不提供 session search，避免本地 title filter 被误解为全量历史搜索。
+- **Session list**: lists every existing session in the workspace, serving as the verification channel for connectivity and parsing
+- **Session list styling**: avoid the system default link blue; text in neutral colors and the current session highlighted with a background
+- **Permissions**: on `permission.asked`, show a card for the user to approve or reject manually, calling `POST /session/:id/permissions/:permissionID`
+- **Question**: on `question.asked`, show a question card; pending questions are re-fetched via `GET /question` at startup; answering and rejecting call `/question/{id}/reply` and `/question/{id}/reject` respectively
+- **Composer**: the `voice rail + text review field` two-row structure. The voice rail on top carries the voice transport, waveform/status, transcription-wait recovery, and preserved-audio retry; the text review field below carries the transcript, manual corrections, fallback typing, and the fixed send button. When a voice transcription or preserved-audio retry streams a partial transcript, the text review field scrolls to the end so the newest text stays visible; ordinary manual input and draft restoration never force a scroll. While busy, send still calls `prompt_async` and the server queues the message
+- **Drafts**: unsent input is persisted per sessionID, restored when switching back, and cleared after a successful send
+- **Model selection**: remembered per sessionID and restored automatically when switching sessions (avoiding a global model overriding per-session choice)
+- **Agent selection**: remembered per sessionID (same as model); the message body carries the `agent: string` field when sending
+- **Voice input**: starting a recording creates a VoiceFlowKit realtime session, with `AVAudioEngine` producing PCM16 mono 24kHz chunks; the Kit writes each chunk into a temporary `.pcm` cache and sends it over the current WebSocket. While recording, the voice rail waveform consumes the real 0..1 smoothed mic level from `VoiceFlowMicrophone.audioLevel`. A heartbeat or send failure triggers Kit recovery: cancel the broken session, create a new one, replay the cache file sequentially from offset 0 to the current end, then resume live sending. Stopping the recording waits for recovery to finish, sends `commit` / `stop`, and appends the transcript to the text review field. While transcription waits, a processing waveform and `Stop transcription wait` are shown; tapping calls `abortPreservingAudio()`, releasing the UI immediately while keeping the cache. In the preserved-audio state, the transport on the left shows a `Retry this segment` icon button that re-recognizes the same PCM via `transcribe(preservedAudio:)`, and the action on the right shows `Discard audio` to drop the cache and exit the recovery state. After a failed retry the cache is kept, and the user can retry again or discard. The Base URL and token are configured under Settings → Speech Recognition and stored in the Keychain
+- **Agent abort**: `Interrupt agent` is an item in the composer status line's `⋯` menu and calls `POST /session/:id/abort`. It is a low-frequency escape hatch and shares no transport slot or stop glyph with voice transcription recovery
+- **History loading interaction**: the top of Chat shows a "pull to load more history" hint; while loading it shows "loading more history...", with Chinese and English localization. Loading more widens the `GET /session/:id/message?limit=` window, and the client records the requested limit, the returned message count, and the number of items dropped by the fallback decoder, making it easier to debug pagination stalls caused by old history message shapes. The `files` field of a message part accepts both string arrays and objects missing diff counts, so legacy patch/tool records cannot block display of earlier history.
+- **Session Archive**: the Session List shows Active / Archived sections. Archiving reuses `PATCH /session/:id`: Archive writes a positive archived timestamp, and Restore writes `-1` as the legacy restore sentinel; the client treats `time.archived > 0` as archived. The client does not treat archive as a variant of delete. After Archive / Restore succeed, the returned `Session` updates the local list and the Active / Archived sections are recomputed. Archive applies recursively across the session subtree, children first and parent last, so active children are not briefly promoted to root after the parent hides; Restore runs parent first and children after, so children do not float free while the parent is still archived. The iPhone sheet and iPad sidebar share one set of rules: leading swipe for Archive/Restore, trailing swipe for Delete; every swipe action disables full swipe, and Delete shows no confirmation dialog. Session list pagination uses an explicit "Load more sessions" row instead of automatic `onAppear` loading at the bottom, avoiding large pulls of invisible historical sessions while the archived section sits collapsed by default. This round ships no session search, so a local title filter cannot be mistaken for a full history search.
 
-#### 6.1 Fork Session（会话分叉）
+#### 6.1 Fork Session
 
-用户消息底部 model label 旁的 "..." 菜单提供 "Fork from here" 选项。调用 `POST /session/{id}/fork`（body: `{ "messageID": "..." }`），服务端复制指定消息之前的全部历史到新 session 并返回。客户端收到新 `Session` 后插入列表顶部并切换。
+The "..." menu next to the model label at the bottom of a user message offers "Fork from here". It calls `POST /session/{id}/fork` (body: `{ "messageID": "..." }`); the server copies all history before the given message into a new session and returns it. On receiving the new `Session`, the client inserts it at the top of the list and switches to it.
 
-**实现要点**：
-- 使用 SwiftUI `Menu`（tap 触发，非 `.contextMenu` 长按），确保按钮可发现性
-- `MessageRowView` 新增 `onForkFromMessage: ((String) -> Void)?` 回调，将 `message.info.id` 传递给 `AppState.forkSession(messageID:)`
-- `AppState.forkSession()` 遵循 `createSession()` 模式：guard `isConnected` + `currentSessionID`，调 API，insert session，switch，load messages
-- Fork 后的 session 标题由服务端生成："{原标题} (fork #N)"
+**Implementation notes**:
+- SwiftUI `Menu` (tap-triggered, rather than the long press of `.contextMenu`) keeps the button discoverable
+- `MessageRowView` gains an `onForkFromMessage: ((String) -> Void)?` callback that passes `message.info.id` to `AppState.forkSession(messageID:)`
+- `AppState.forkSession()` follows the `createSession()` pattern: guard `isConnected` + `currentSessionID`, call the API, insert the session, switch, load messages
+- The forked session title is generated by the server: "{original title} (fork #N)"
 
-### 7. 文件与 Diff
+### 7. Files and Diff
 
-- **文件树**：`GET /file?path=` 递归展示；`GET /file/status` 获取 git 状态做颜色标记
-- **内容**：`GET /file/content?path=`；文本文件显示等宽代码视图与行号；Markdown 使用 Preview / source 切换；图像文件支持交互式预览与系统分享
-- **Session Diff**：暂不在 iOS 客户端展示（server 端 diff API 在部分情况下返回空数组）
+- **File tree**: `GET /file?path=` renders recursively; `GET /file/status` supplies git status for color marks
+- **Content**: `GET /file/content?path=`; text files get a monospaced code view with line numbers; Markdown switches between Preview / source; images get interactive preview and system sharing
+- **Session Diff**: not shown in the iOS client for now (the server diff API returns an empty array in some cases)
 
-### 7.5 Markdown Web Preview 架构决策
+### 7.5 Markdown Web Preview Architecture Decisions
 
-打开 `.md` 文件能看到卡片、SVG、暗色适配，不只是纯文字。所有渲染发生在 iOS 本地，不联网、不跑作者代码。
+Opening an `.md` file shows cards, SVG, and dark mode support, going beyond plain text. All rendering happens locally on iOS: no network access and no execution of author code.
 
 <style>
 .rfcw-stat{display:inline-block;border-radius:999px;padding:1px 8px;font-size:.78rem;font-weight:650}
@@ -602,89 +602,89 @@ receive URL
 .rfcw-stat.block{background:var(--block-bg,#e5e7eb);color:var(--block-fg,#374151)}
 </style>
 
-| 用户能体验到的 | 状态 |
+| What the user experiences | Status |
 |---|---|
-| 打开 markdown 文件默认看到 Web Preview，工具栏可切回 Native / 源码 | <span class="rfcw-stat ok">上线</span> |
-| `<style>` / `<div class="card">` / 内联 SVG 正常渲染 | <span class="rfcw-stat ok">上线</span> |
-| 相对路径的图片能加载 | <span class="rfcw-stat ok">上线</span> |
-| 同一个文件在 light / dark 模式都好读，不出现糊掉的卡片 | <span class="rfcw-stat ok">上线</span> |
-| 危险 HTML（脚本、表单、外站 iframe）被剥掉不执行 | <span class="rfcw-stat ok">上线</span> |
-| 切换文件时内容立刻刷新，不需要手动下拉 | <span class="rfcw-stat ok">上线</span> |
-| 超大文件先弹确认，避免卡死 | <span class="rfcw-stat ok">上线</span> |
-| 打开独立 `.html` artifact、Mermaid、代码高亮、点图放大 | <span class="rfcw-stat block">下一轮</span> |
+| Opening a markdown file shows the Web Preview by default, with toolbar switching back to Native / source | <span class="rfcw-stat ok">Shipped</span> |
+| `<style>` / `<div class="card">` / inline SVG render properly | <span class="rfcw-stat ok">Shipped</span> |
+| Relative-path images load | <span class="rfcw-stat ok">Shipped</span> |
+| The same file reads well in light / dark mode, with no washed-out cards | <span class="rfcw-stat ok">Shipped</span> |
+| Dangerous HTML (scripts, forms, third-party iframes) is stripped and never executes | <span class="rfcw-stat ok">Shipped</span> |
+| Switching files refreshes content immediately, with no manual pull needed | <span class="rfcw-stat ok">Shipped</span> |
+| Very large files ask for confirmation first, avoiding hangs | <span class="rfcw-stat ok">Shipped</span> |
+| Standalone `.html` artifacts, Mermaid, code highlighting, tap to zoom images | <span class="rfcw-stat block">Next round</span> |
 
 <details>
-<summary>实现要点（工程读者展开）</summary>
+<summary>Implementation notes (expand for engineering readers)</summary>
 
-- **渲染路径**：`MarkdownWebPreviewView`（`UIViewRepresentable` 包 `WKWebView`）加载 app bundle 内的 `preview.html`；Swift 通过 `evaluateJavaScript` 调用 `window.renderMarkdown({markdown, theme})`，payload 经 `JSONSerialization`，不字符串拼接 markdown。
-- **JS 依赖**：`markdown-it@14.2.0` + `DOMPurify@3.4.10` + `Temml@0.13.4` 固定打进 bundle，零 CDN 调用。Temml 在 markdown-it token 阶段把 `$...$` / `$$...$$` 转为 MathML，再与其余 HTML 一起进入 sanitizer。Xcode 同步文件夹会拍平子目录，所以 vendor 文件与 `preview.html` 同级，src 不带 `vendor/` 前缀。
-- **图片解析**：复用 `MarkdownImageResolver.resolveImages` 把相对图片转 `data:` URI，再交给 WebView — 与 §3.7 Markdown 图片解析契约语义一致。
-- **安全模型**：Temml 使用 `trust: false` 和有界 macro/size 配置；它生成的 MathML 不绕过 sanitizer。DOMPurify 使用显式 HTML/SVG/MathML allowlist，禁 `script` / `iframe` / `form` / `object` / `embed` / `on*` 事件属性 / `javascript:` URL；`WKNavigationDelegate` 拦截除 file / fragment 外的所有 navigation；外链交系统 Safari，workspace 相对链接走 `state.fileToOpenInFilesTab`；`WKWebsiteDataStore` 用 non-persistent，无持久 cookie / localStorage。
-- **主题适配**：shell 暴露 `--fg` / `--bg` / `--card-bg` / `--border` / `--link` / `--ok-*` / `--bad-*` / `--warn-*` / `--block-*` 等 CSS 变量，light / dark 两套定义。作者样式必须用 `var(--x, fallback)` 形式，不支持主题变量的渲染器（Cursor、GitHub）退回 fallback。Dark 模式 chip 用饱和主色（`--ok-bg=#10b981` 等），避免深底沉进卡片。chip 必须用复合选择器 `.vx-chip.ok`，裸 `.ok` 会被卡片 `color:var(--fg)` 覆盖。
-- **切换刷新**：`FileContentView` 在 `.onChange(of: filePath)` 主动 reset content + reload，避免 SwiftUI 复用 view 实例时旧文件残留。
+- **Render path**: `MarkdownWebPreviewView` (a `UIViewRepresentable` wrapping `WKWebView`) loads `preview.html` from the app bundle; Swift calls `window.renderMarkdown({markdown, theme})` through `evaluateJavaScript`, with the payload passed through `JSONSerialization` and no string-concatenated markdown.
+- **JS dependencies**: `markdown-it@14.2.0` + `DOMPurify@3.4.10` + `Temml@0.13.4` are pinned into the bundle with zero CDN calls. Temml converts `$...$` / `$$...$$` to MathML at the markdown-it token stage, and the MathML then goes through the sanitizer along with the rest of the HTML. Xcode synced folders flatten subdirectories, so the vendor files sit next to `preview.html` and the src carries no `vendor/` prefix.
+- **Image resolution**: `MarkdownImageResolver.resolveImages` converts relative images to `data:` URIs before handing them to the WebView, matching the semantics of the §3.7 Markdown image resolution contract.
+- **Security model**: Temml runs with `trust: false` and bounded macro/size configuration; the MathML it generates does not bypass the sanitizer. DOMPurify uses an explicit HTML/SVG/MathML allowlist that bans `script` / `iframe` / `form` / `object` / `embed` / `on*` event attributes / `javascript:` URLs; the `WKNavigationDelegate` intercepts every navigation except file / fragment; external links go to system Safari while workspace-relative links route through `state.fileToOpenInFilesTab`; `WKWebsiteDataStore` is non-persistent with no persistent cookies / localStorage.
+- **Theme adaptation**: the shell exposes CSS variables such as `--fg` / `--bg` / `--card-bg` / `--border` / `--link` / `--ok-*` / `--bad-*` / `--warn-*` / `--block-*`, defined for both light / dark. Author styles must use the `var(--x, fallback)` form so renderers without theme variable support (Cursor, GitHub) fall back cleanly. Dark mode chips use saturated primary colors (`--ok-bg=#10b981` and similar) so they do not sink into the card on a dark background. Chips must use the compound selector `.vx-chip.ok`; a bare `.ok` gets overridden by the card's `color:var(--fg)`.
+- **Switch refresh**: `FileContentView` resets content and reloads in `.onChange(of: filePath)`, preventing stale file content when SwiftUI reuses the view instance.
 
 </details>
 
-完整子项目 PRD / RFC 保留在磁盘 `docs/archive/2026-06_markdown_web_preview_prd.md` / `2026-06_markdown_web_preview_rfc.md`，已从 git 跟踪移除；决策过程见 [`WORKING.md`](WORKING.md)。
+The full sub-project PRD / RFC remain on disk at `docs/archive/2026-06_markdown_web_preview_prd.md` / `2026-06_markdown_web_preview_rfc.md`, removed from git tracking; the decision process is in [`WORKING.md`](WORKING.md).
 
-### 8. iPad / Vision Pro 布局（Phase 3）
+### 8. iPad / Vision Pro Layout (Phase 3)
 
-- **条件**：`horizontalSizeClass == .regular` 或 `userInterfaceIdiom == .pad` 时启用
-- **布局**：无 Tab Bar；三栏（NavigationSplitView）：左栏 Workspace（Files + Sessions），中栏 Preview（文件预览），右栏 Chat（消息流 + 输入框）
-- **列宽**：Workspace 约占 1/6；Preview 与 Chat 平分剩余 5/6（各 5/12）
-- **可拖动**：三栏宽度支持拖动调整；以上为默认 ideal 宽度
-- **文件预览**：iPad 上不使用 sheet。左栏选择文件、或 Chat 中点击 tool/patch 的 file path 时，更新中栏 Preview 预览对应文件
-- **刷新**：Preview 中栏右上角提供刷新按钮（重新加载文件内容），用于外部变更后的手动刷新
-- **Toolbar**：第一行统一：左（Session 列表、重命名、Compact、新建 Session）+ 右（模型下拉列表、Agent 下拉列表、Context Usage ring、**Settings 按钮**）；Settings 点击以 sheet 打开
-- **模型与 Agent 选择器**：原 chip 横向滚动改为下拉列表（Menu + Picker）。模型列表固定（GLM-5.1 / GPT-5.4 / GPT-5.3 Codex / DeepSeek）；Agent 列表从 `GET /agent` 动态获取（过滤 hidden）
-- **模型标签**：iPhone 上使用短名（`GLM` / `Opus` / `GPT` / `Gemini`）以适配窄宽；iPad 上显示全称
-- **实现**：`@Environment(\.horizontalSizeClass)` 分支：regular 时渲染三栏 split，小屏时渲染 `TabView`；iPad 用 `previewFilePath` 驱动中栏预览，iPhone 保留 `fileToOpenInFilesTab` 走 sheet / tab 跳转
+- **Condition**: enabled when `horizontalSizeClass == .regular` or `userInterfaceIdiom == .pad`
+- **Layout**: no tab bar; three columns (NavigationSplitView): left Workspace (Files + Sessions), middle Preview (file preview), right Chat (message stream + input)
+- **Column widths**: Workspace roughly 1/6; Preview and Chat split the remaining 5/6 (5/12 each)
+- **Adjustable**: column widths can be dragged; the values above are the default ideal widths
+- **File preview**: no sheets on iPad. Selecting a file in the left column, or tapping a file path in a tool/patch card in Chat, updates the middle Preview column to that file
+- **Refresh**: a refresh button at the top right of the middle Preview column (reloads the file content) for manual refresh after external changes
+- **Toolbar**: the first row unifies left (session list, rename, Compact, new session) and right (model dropdown, agent dropdown, Context Usage ring, **Settings button**); Settings opens as a sheet
+- **Model and agent selectors**: the old horizontally scrolling chips became dropdown lists (Menu + Picker). The model list is fixed (GLM-5.1 / GPT-5.4 / GPT-5.3 Codex / DeepSeek); the agent list comes from `GET /agent` dynamically (hidden filtered out)
+- **Model labels**: iPhones use short names (`GLM` / `Opus` / `GPT` / `Gemini`) to fit the narrow width; the iPad shows full names
+- **Implementation**: branching on `@Environment(\.horizontalSizeClass)`: regular renders the three-column split while compact renders a `TabView`; iPad drives the middle preview with `previewFilePath`, and iPhone keeps `fileToOpenInFilesTab` for sheet / tab navigation
 
-### 9. Context Usage（上下文占用）
+### 9. Context Usage
 
-- **展示**：Chat 顶部右侧（模型切换条与齿轮之间）显示环形进度（灰色空环表示无数据）。
-- **数据**：从最近一次 assistant message 的 `info.tokens`/`info.cost` 读取 token/cost；context limit 从 `GET /config/providers` 中 `limit.context` 获取。
-- **交互**：点击 ring 弹 sheet 展示 provider/model、context limit、total tokens、token breakdown（input/output/reasoning/cache read/cache write）与 total cost。
-- **常驻可见**：ring 在 idle、busy、streaming 等所有状态下始终显示。`ChatTabView` 不向 `.navigationBarTrailing` 注入 `ProgressView`；busy 状态已由输入栏红色停止按钮传达，toolbar spinner 已移除。
+- **Display**: a ring progress at the top right of Chat (between the model switcher and the gear); a gray empty ring means no data.
+- **Data**: token/cost read from the latest assistant message's `info.tokens`/`info.cost`; the context limit comes from `limit.context` in `GET /config/providers`.
+- **Interaction**: tapping the ring opens a sheet with provider/model, context limit, total tokens, the token breakdown (input/output/reasoning/cache read/cache write), and total cost.
+- **Always visible**: the ring stays visible in every state, including idle, busy, and streaming. `ChatTabView` injects no `ProgressView` into `.navigationBarTrailing`; the busy state is conveyed by the red stop button in the input bar, and the toolbar spinner is gone.
 
-### 10. Car Mode 技术方案（已实现 Foreground Phase）
+### 10. Car Mode Technical Design (Foreground Phase Implemented)
 
-#### 10.1 组件与平台门控
+#### 10.1 Components and Platform Gating
 
-Car Mode 只在 iPhone 编译路径和运行时 idiom 下显示。`isCarModeEnabled` 持久化于 UserDefaults，默认 `false`；Settings 的开关和 Car Tab 使用同一个条件。iPad、iPad compact window 与 visionOS 均不暴露入口。
+Car Mode appears only on the iPhone compile path and runtime idiom. `isCarModeEnabled` is persisted in UserDefaults, defaulting to `false`; the Settings toggle and the Car Tab share the same condition. iPad, iPad compact windows, and visionOS expose no entry point.
 
-主要组件：
+Main components:
 
-- `AppState+CarMode.swift`：session lifecycle、turn state、structured response 和 exactly-once 状态。
-- `Models/CarMode.swift`：versioned response envelope 与 JSON Schema。
-- `Views/Car/CarModeView.swift`：录音、等待、朗读、确认和失败 UI。
-- `CarSpeechOutputService.swift`：Apple TTS 与 AudioSession 切换。
-- `CarClientActionDispatcher.swift`：typed Maps action allowlist；Health action 交给独立 capability dispatcher。
-- `APIClient.promptStructured(...)`：同步 `POST /session/:id/message` wrapper。
+- `AppState+CarMode.swift`: session lifecycle, turn state, structured response, and exactly-once state.
+- `Models/CarMode.swift`: the versioned response envelope and JSON Schema.
+- `Views/Car/CarModeView.swift`: recording, waiting, speaking, confirmation, and failure UI.
+- `CarSpeechOutputService.swift`: Apple TTS and AudioSession switching.
+- `CarClientActionDispatcher.swift`: the typed Maps action allowlist; the Health action goes to a separate capability dispatcher.
+- `APIClient.promptStructured(...)`: a synchronous `POST /session/:id/message` wrapper.
 
 #### 10.2 Structured Prompt Contract
 
-每轮请求显式携带 `system` 和 `format: json_schema`，固定使用 `build` agent 与 `openai/gpt-5.6-sol-fast`。server 通过 StructuredOutput tool 校验并把结果写入 `assistant.structured`。客户端不从自然语言 text part 推断 action，也不因 structured assistant 的 `finish == tool-calls` 判定失败。
+Every turn's request explicitly carries `system` and `format: json_schema`, always using the `build` agent and `openai/gpt-5.6-sol-fast`. The server validates through the StructuredOutput tool and writes the result into `assistant.structured`. The client never infers actions from natural-language text parts and never treats the structured assistant's `finish == tool-calls` as a failure.
 
-最小 envelope：
+Minimal envelope:
 
 ```json
 {
   "version": 1,
   "status": "completed",
-  "speech": "车库门关着，状态刚刚更新。",
+  "speech": "The garage door is closed. Status just refreshed.",
   "confirmation": null,
   "clientActions": []
 }
 ```
 
-需要确认时，`status` 为 `needs_confirmation` 并携带稳定 confirmation ID；导航完成时最多返回一个 typed action：
+When confirmation is needed, `status` is `needs_confirmation` and carries a stable confirmation ID; at navigation completion at most one typed action is returned:
 
 ```json
 {
   "version": 1,
   "status": "completed",
-  "speech": "正在打开前往 Bright Horizons 的导航。",
+  "speech": "Starting navigation to Bright Horizons.",
   "confirmation": null,
   "clientActions": [
     {
@@ -697,11 +697,11 @@ Car Mode 只在 iPhone 编译路径和运行时 idiom 下显示。`isCarModeEnab
 }
 ```
 
-Schema 限制 version、status、speech 长度、action 数量和 action type。system prompt 约束 speech 先说结论、不含 Markdown/URL/代码、默认 8-12 秒且不超过 15 秒，并声明只有用户消息可以授权现实世界副作用。
+The Schema constrains version, status, speech length, action count, and action type. The system prompt requires the speech to state the conclusion first, contain no Markdown/URLs/code, run 8-12 seconds by default with a 15-second maximum, and declares that only user messages can authorize real-world side effects.
 
-#### 10.3 Session Lifecycle 与归档恢复
+#### 10.3 Session Lifecycle and Archive Recovery
 
-Car session key 为 `hostProfileID + effectiveProjectDirectory`，与普通 Chat 的 `currentSessionID` 分离。本地记录：
+The Car session key is `hostProfileID + effectiveProjectDirectory`, kept separate from normal Chat's `currentSessionID`. Local record:
 
 ```text
 sessionID
@@ -710,16 +710,16 @@ pendingConfirmationID
 lastUsedAt
 ```
 
-每个 turn 都调用 `ensureCarSession()`：
+Every turn calls `ensureCarSession()`:
 
-1. 无记录时创建 `Car Mode` session 并保存。
-2. 有记录时调用 `GET /session/:id`；404 清除记录并创建一次新 session。
-3. session 的 `time.archived > 0` 时，调用 `PATCH /session/:id` 写入 `{ "time": { "archived": -1 } }`，用 server 已接受的 legacy restore sentinel 恢复 iOS Active 状态，然后继续使用原 session。
-4. 不 fork、不复制历史，也不为 Web global list 修改 server。OpenCode Web 可能要求 `archived === undefined`，因此 `-1` 的跨客户端可见性不属于 Car Mode 保证。
+1. With no record, create the `Car Mode` session and save it.
+2. With a record, call `GET /session/:id`; a 404 clears the record and creates a new session once.
+3. When the session has `time.archived > 0`, call `PATCH /session/:id` to write `{ "time": { "archived": -1 } }`, restoring the iOS Active state with the legacy restore sentinel the server already accepts, then keep using the original session.
+4. No forking, no history copying, and no server changes for the Web global list. OpenCode Web may require `archived === undefined`, so cross-client visibility of `-1` is not something Car Mode guarantees.
 
-切后台、切 Tab 或打开 Maps 会停止录音、TTS 和当前前台 request，但不清除 session ID。用户显式选择 New Car Session 时才移除当前 context mapping。
+Backgrounding, switching tabs, or opening Maps stops recording, TTS, and the current foreground request without clearing the session ID. Only an explicit New Car Session choice removes the current context mapping.
 
-#### 10.4 Turn State 与 Exactly-Once
+#### 10.4 Turn State and Exactly-Once
 
 ```text
 idle
@@ -730,72 +730,72 @@ idle
 → idle
 ```
 
-只有 VoiceFlow final transcript 自动提交。响应必须同时满足目标 session、assistant role、`time.completed != nil`、可解码的 version 1 structured envelope 和非空 speech。客户端用 assistant message ID 去重 TTS/action，用 confirmation ID 关联下一轮。取消活动 turn 时停止 TTS，并 best-effort 调用 `POST /session/:id/abort`。
+Only the VoiceFlow final transcript auto-submits. A response must simultaneously match the target session, the assistant role, `time.completed != nil`, a decodable version 1 structured envelope, and non-empty speech. The client deduplicates TTS/actions by assistant message ID and links the next turn by confirmation ID. Cancelling an active turn stops TTS and best-effort calls `POST /session/:id/abort`.
 
-当前 Foreground Phase 使用同步 endpoint，直接获得最终 assistant；普通 Chat 的异步 `prompt_async → SSE → reload` 不复用这条状态机。后续异步化仍需保留上述 completion predicate 和 exactly-once ID，不得仅凭 `session.status == idle` 触发朗读或 action。
+The current Foreground Phase uses a synchronous endpoint and gets the final assistant directly; normal Chat's asynchronous `prompt_async → SSE → reload` does not reuse this state machine. Any later move to async must keep the completion predicate and exactly-once IDs above, and must never trigger speech or actions on `session.status == idle` alone.
 
-#### 10.5 Audio 与 Client Action
+#### 10.5 Audio and Client Actions
 
-VoiceFlow finalization 完成后先释放录音 AudioSession，再由 TTS service 切换到 `.playback` + `.spokenAudio`。这避免声音残留在 receiver 或 Bluetooth HFP route。录音开始或取消时停止当前朗读。
+After VoiceFlow finalization completes, the recording AudioSession is released first, and the TTS service then switches to `.playback` + `.spokenAudio`. This keeps audio from lingering on the receiver or a Bluetooth HFP route. Current playback stops when a recording starts or is cancelled.
 
-`open_navigation` 由 Maps dispatcher 校验 destination/waypoints 并构造 Apple Maps URL。`health_quantification.export_all` 使用独立本地授权、Pending/Outbox 和 callback continuation；正式技术合同见 [`features/client_capabilities/rfc.md`](features/client_capabilities/rfc.md) 与 [`features/client_capabilities/protocol.md`](features/client_capabilities/protocol.md)。两种 action 都不接受模型提供任意 URL。
+The Maps dispatcher validates the destination/waypoints for `open_navigation` and builds the Apple Maps URL. `health_quantification.export_all` uses separate local authorization, a Pending/Outbox, and callback continuation; the formal technical contracts are in [`features/client_capabilities/rfc.md`](features/client_capabilities/rfc.md) and [`features/client_capabilities/protocol.md`](features/client_capabilities/protocol.md). Neither action accepts an arbitrary model-provided URL.
 
-#### 10.6 Server Contract 与验证证据
+#### 10.6 Server Contract and Verification Evidence
 
-Car Mode 不维护 archive-list server patch。唯一独立 server compatibility 修复是 structured user message `info.format` 的 wire schema，使 `GET /session/:id/message` 能读取持久化 structured turns；该修复位于 nested checkout commit `43a4a0e53`，与 Car session active-list 行为无关。
+Car Mode maintains no archive-list server patch. The only standalone server compatibility fix is the wire schema for the structured user message `info.format`, which lets `GET /session/:id/message` read persisted structured turns; that fix lives in nested checkout commit `43a4a0e53` and is unrelated to Car session active-list behavior.
 
-2026-07-13 live spike 已验证：同步 structured speech 返回有效 object；同一 session 第二轮保留上一轮目的地；tool execution 后仍能以 structured final 结束。它只证明通用 tool → structured 链路，不证明 Smart Home、邮件、iMessage 或 route-duration 已注册、授权或完成真实 E2E。
+The 2026-07-13 live spike verified: synchronous structured speech returns a valid object; a second turn in the same session retains the previous destination; and after tool execution the run can still finish with a structured final. It proves only the generic tool → structured path, and does not prove that Smart Home, email, iMessage, or route-duration are registered, authorized, or real-E2E complete.
 
-客户端验证覆盖 unit state flow、structured history fallback、iPhone 实验开关与 Car UI、iPad 入口隐藏，以及 visionOS build。测试固定使用串行 `xcodebuild` 和 `-parallel-testing-enabled NO`。
+Client verification covers the unit state flow, structured history fallback, the iPhone experimental toggle and Car UI, the hidden iPad entry point, and the visionOS build. Testing always uses serial `xcodebuild` with `-parallel-testing-enabled NO`.
 
 ---
 
-## 实现规划
+## Implementation Plan
 
-| Phase | 范围 | 预计周期 |
+| Phase | Scope | Estimated duration |
 |-------|------|----------|
-| 1 | Server 连接、SSE、Session、消息发送、流式渲染 | 2–3 周 |
-| 2 | Part 渲染、权限手动批准、主题、`prompt_async` | 2 周 |
-| 3 | 文件树、Markdown 预览、文档 Diff、Think Streaming delta、**iPad/Vision Pro 分栏布局** | 2–3 周 |
-| 4 | mDNS、Widget 等 | 暂不实现 |
+| 1 | Server connection, SSE, sessions, message sending, streaming render | 2–3 weeks |
+| 2 | Part rendering, manual permission approval, theming, `prompt_async` | 2 weeks |
+| 3 | File tree, Markdown preview, document diff, Think Streaming delta, **iPad/Vision Pro split layout** | 2–3 weeks |
+| 4 | mDNS, Widget, and more | Not implemented yet |
 
-### Code Review 跟进（2026-02）
+### Code Review Follow-ups (2026-02)
 
-| 编号 | 状态 | 说明 |
+| Item | Status | Description |
 |------|------|------|
-| 2.1 | ✅ | UserDefaults + Keychain 持久化凭证 |
-| 2.2 | ✅ | Chat 文字选择 — 仅用户消息 + AI text part 可选，见 RFC §5.1.1 |
-| 2.3 | ✅ | ChatTabView 拆分至 Views/Chat/*.swift |
-| 2.4 | ✅ | Todo 方案 B：仅 tool 卡片内展示 |
-| 2.5 | ✅ | 移除 debug print |
+| 2.1 | ✅ | Credentials persisted with UserDefaults + Keychain |
+| 2.2 | ✅ | Chat text selection: only user messages and AI text parts are selectable, see RFC §5.1.1 |
+| 2.3 | ✅ | ChatTabView split into Views/Chat/*.swift |
+| 2.4 | ✅ | Todo option B: displayed only inside the tool card |
+| 2.5 | ✅ | Debug prints removed |
 
 ---
 
-## 弃用方案
+## Rejected Alternatives
 
-以下方案在讨论中被放弃：
+The following approaches were dropped during discussion:
 
-1. **使用 Alamofire**：`URLSession` 足够，新增依赖无必要
-2. **后台常驻 SSE**：iOS 会主动断开，且耗电；改为前台建立、后台断开
-3. **本地消息队列**：服务端 `prompt_async` 已支持 busy 排队，无需客户端维护
-4. **自动批准权限**：OpenCode 极少请求 permission，出现即为异常，改为手动批准
-
----
-
-## 已决事项
-
-1. **Markdown 库**：使用 MarkdownUI，优先采用 iOS 原生能力
-2. **大型 Session**：暂不考虑，不预期 session 超过百条消息
-3. **Diff 高亮**：优先使用 iOS 原生能力实现
+1. **Using Alamofire**: `URLSession` is enough, and a new dependency is unnecessary
+2. **Background-persistent SSE**: iOS disconnects it anyway and it drains the battery; the design connects in the foreground and disconnects in the background
+3. **Local message queue**: the server's `prompt_async` already queues while busy, so the client needs none
+4. **Auto-approving permissions**: OpenCode rarely requests permission, and a request signals something unusual; approval is manual instead
 
 ---
 
-## 附录：与 PRD 的对应关系
+## Decided Items
 
-| PRD 章节 | 本 RFC 对应 |
+1. **Markdown library**: MarkdownUI, with iOS native capabilities preferred
+2. **Large sessions**: not a concern for now; sessions are not expected to exceed about a hundred messages
+3. **Diff highlighting**: implemented with iOS native capabilities first
+
+---
+
+## Appendix: Mapping to the PRD
+
+| PRD section | Corresponding RFC section |
 |----------|-------------|
-| 3. 技术架构 | §1 整体架构、§2 技术选型 |
-| 4.2 Chat Tab | §5 消息与文档 UI、§6 权限与输入 |
-| 4.3 Files Tab | §7 文件与 Diff |
-| 5. 数据流与状态管理 | §4 状态管理、§3 网络层 |
-| 11. 实现起步指南 | §实现规划 |
+| 3. Technical Architecture | §1 Overall Architecture, §2 Technology Choices |
+| 4.2 Chat Tab | §5 Message and Document UI, §6 Permissions and Input |
+| 4.3 Files Tab | §7 Files and Diff |
+| 5. Data Flow and State Management | §4 State Management, §3 Network Layer |
+| 11. Getting Started Guide | §Implementation Plan |

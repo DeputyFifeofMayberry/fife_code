@@ -28,13 +28,13 @@ final class OpenCodeClientUITests: XCTestCase {
         app.launch()
     }
 
-    /// 2.3 ChatTabView baseline: 验证 Chat 页加载后输入框可见（refactor 后用此测试回归）
+    /// 2.3 ChatTabView baseline: verify the Chat input field is visible after the page loads (use this to regression-test refactors)
     @MainActor
     func testChatTabShowsInputField() throws {
         let app = XCUIApplication()
         app.launch()
         let askField = app.textViews["chat-input"]
-        XCTAssertTrue(askField.waitForExistence(timeout: 8), "Chat 输入框应可见")
+        XCTAssertTrue(askField.waitForExistence(timeout: 8), "Chat input field should be visible")
     }
 
     @MainActor
@@ -67,7 +67,7 @@ final class OpenCodeClientUITests: XCTestCase {
         app.launch()
 
         let composer = app.textViews["chat-input"]
-        XCTAssertTrue(composer.waitForExistence(timeout: 8), "Chat 输入框应可见")
+        XCTAssertTrue(composer.waitForExistence(timeout: 8), "Chat input field should be visible")
 
         composer.tap()
         composer.typeText((1...18).map { "Line \($0)" }.joined(separator: "\n"))
@@ -80,7 +80,7 @@ final class OpenCodeClientUITests: XCTestCase {
         add(attachment)
 
         let composerValue = composer.value as? String ?? ""
-        XCTAssertTrue(composerValue.contains("Line 18"), "输入框应保留完整长文本内容")
+        XCTAssertTrue(composerValue.contains("Line 18"), "Composer should retain the full long text content")
     }
 
     @MainActor
@@ -91,14 +91,14 @@ final class OpenCodeClientUITests: XCTestCase {
 
         app.buttons["chat-toolbar-session-list"].tap()
 
-        XCTAssertTrue(app.staticTexts["Root Session"].waitForExistence(timeout: 8), "Root session 应可见")
-        XCTAssertTrue(app.staticTexts["Child Session"].waitForExistence(timeout: 8), "Child session 应可见，避免回归到 root-only 列表")
-        XCTAssertTrue(app.staticTexts["Archived"].waitForExistence(timeout: 8), "Archived section header 应可见")
+        XCTAssertTrue(app.staticTexts["Root Session"].waitForExistence(timeout: 8), "Root session should be visible")
+        XCTAssertTrue(app.staticTexts["Child Session"].waitForExistence(timeout: 8), "Child session should be visible; guards against regressing to a root-only list")
+        XCTAssertTrue(app.staticTexts["Archived"].waitForExistence(timeout: 8), "Archived section header should be visible")
 
         app.staticTexts["Archived"].tap()
 
-        XCTAssertTrue(app.staticTexts["Archived Session"].waitForExistence(timeout: 8), "Archived session 应可见")
-        XCTAssertTrue(app.staticTexts["Archived Child"].waitForExistence(timeout: 8), "Archived child 应可见")
+        XCTAssertTrue(app.staticTexts["Archived Session"].waitForExistence(timeout: 8), "Archived session should be visible")
+        XCTAssertTrue(app.staticTexts["Archived Child"].waitForExistence(timeout: 8), "Archived child should be visible")
 
         let screenshot = XCUIScreen.main.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
@@ -149,10 +149,10 @@ final class OpenCodeClientUITests: XCTestCase {
             app.buttons["chat-toolbar-session-list"].tap()
         }
 
-        XCTAssertTrue(app.staticTexts["Archived"].waitForExistence(timeout: 8), "Archived section header 应可见")
+        XCTAssertTrue(app.staticTexts["Archived"].waitForExistence(timeout: 8), "Archived section header should be visible")
         app.staticTexts["Archived"].tap()
-        XCTAssertTrue(app.staticTexts["Archived Session"].waitForExistence(timeout: 8), "Archived session 应可见")
-        XCTAssertTrue(app.staticTexts["Archived Child"].waitForExistence(timeout: 8), "Archived child 应可见")
+        XCTAssertTrue(app.staticTexts["Archived Session"].waitForExistence(timeout: 8), "Archived session should be visible")
+        XCTAssertTrue(app.staticTexts["Archived Child"].waitForExistence(timeout: 8), "Archived child should be visible")
 
         let data = XCUIScreen.main.screenshot().pngRepresentation
         try data.write(to: URL(fileURLWithPath: path))
@@ -165,11 +165,11 @@ final class OpenCodeClientUITests: XCTestCase {
         try openSettingsInHostProfilesFixture(app)
         app.buttons["settings-current-host"].tap()
 
-        XCTAssertTrue(app.navigationBars["Hosts"].waitForExistence(timeout: 8), "Hosts 页面应打开")
-        XCTAssertTrue(app.staticTexts["Local OpenCode"].waitForExistence(timeout: 8), "默认 Direct host 应可见")
-        XCTAssertTrue(app.staticTexts["SSH Lab"].exists, "SSH tunnel host 应可见")
-        XCTAssertTrue(app.staticTexts["Add Host"].exists, "Add Host 入口应可见")
-        XCTAssertTrue(app.staticTexts["Copy This Device Public Key"].exists, "设备公钥复制入口应可见")
+        XCTAssertTrue(app.navigationBars["Hosts"].waitForExistence(timeout: 8), "Hosts page should open")
+        XCTAssertTrue(app.staticTexts["Local OpenCode"].waitForExistence(timeout: 8), "Default Direct host should be visible")
+        XCTAssertTrue(app.staticTexts["SSH Lab"].exists, "SSH tunnel host should be visible")
+        XCTAssertTrue(app.staticTexts["Add Host"].exists, "Add Host entry should be visible")
+        XCTAssertTrue(app.staticTexts["Copy This Device Public Key"].exists, "Copy this device public key entry should be visible")
     }
 
     @MainActor
@@ -178,12 +178,12 @@ final class OpenCodeClientUITests: XCTestCase {
 
         try openSettingsInHostProfilesFixture(app)
         app.buttons["settings-current-host"].tap()
-        XCTAssertTrue(app.navigationBars["Hosts"].waitForExistence(timeout: 8), "Hosts 页面应打开")
+        XCTAssertTrue(app.navigationBars["Hosts"].waitForExistence(timeout: 8), "Hosts page should open")
         app.staticTexts["SSH Lab"].tap()
 
-        XCTAssertTrue(app.navigationBars["SSH Lab"].waitForExistence(timeout: 8), "SSH Host 详情应打开")
-        XCTAssertTrue(app.buttons["host-detail-use-this-host"].exists, "非当前 host 应显示显式切换按钮")
-        XCTAssertTrue(app.buttons["host-detail-copy-config"].exists, "详情应支持复制 Host Config JSON")
+        XCTAssertTrue(app.navigationBars["SSH Lab"].waitForExistence(timeout: 8), "SSH host detail should open")
+        XCTAssertTrue(app.buttons["host-detail-use-this-host"].exists, "A non-current host should show an explicit switch button")
+        XCTAssertTrue(app.buttons["host-detail-copy-config"].exists, "Detail should support copying the Host Config JSON")
     }
 
     @MainActor
@@ -229,7 +229,7 @@ final class OpenCodeClientUITests: XCTestCase {
         app.buttons["host-save"].tap()
 
         XCTAssertTrue(app.navigationBars["Hosts"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts["Tailscale Mac"].waitForExistence(timeout: 8), "新 Direct host 应保存并显示")
+        XCTAssertTrue(app.staticTexts["Tailscale Mac"].waitForExistence(timeout: 8), "New Direct host should be saved and shown")
         XCTAssertTrue(app.staticTexts["https://tailnet.example.invalid:4096"].exists)
     }
 
@@ -261,10 +261,10 @@ final class OpenCodeClientUITests: XCTestCase {
         app.launchArguments = ["UITEST_F3_TRANSCRIBING_FIXTURE"]
         app.launch()
 
-        XCTAssertTrue(app.buttons["agent-interrupt-menu"].waitForExistence(timeout: 8), "agent 中断菜单应可见但降级为 quiet status")
-        XCTAssertTrue(app.otherElements["speech-waveform"].waitForExistence(timeout: 8), "语音 waveform rail 应可见")
-        XCTAssertTrue(app.buttons["speech-stop-waiting"].waitForExistence(timeout: 8), "转写等待停止按钮应可见")
-        XCTAssertTrue(app.buttons["chat-send"].waitForExistence(timeout: 8), "send 按钮应保留固定槽位")
+        XCTAssertTrue(app.buttons["agent-interrupt-menu"].waitForExistence(timeout: 8), "Agent interrupt menu should be visible but downgraded to a quiet status")
+        XCTAssertTrue(app.otherElements["speech-waveform"].waitForExistence(timeout: 8), "Speech waveform rail should be visible")
+        XCTAssertTrue(app.buttons["speech-stop-waiting"].waitForExistence(timeout: 8), "Stop-waiting button should be visible while transcribing")
+        XCTAssertTrue(app.buttons["chat-send"].waitForExistence(timeout: 8), "Send button should keep a fixed slot")
 
         try captureF3Screenshot(named: "f3_transcribing_agent_running")
     }
@@ -275,11 +275,11 @@ final class OpenCodeClientUITests: XCTestCase {
         app.launchArguments = ["UITEST_F3_RETRY_FIXTURE"]
         app.launch()
 
-        XCTAssertTrue(app.buttons["agent-interrupt-menu"].waitForExistence(timeout: 8), "agent 中断菜单应可见但降级为 quiet status")
-        XCTAssertTrue(app.otherElements["speech-waveform"].waitForExistence(timeout: 8), "语音 waveform rail 应可见")
-        XCTAssertTrue(app.buttons["speech-retry-segment"].waitForExistence(timeout: 8), "重试这段按钮应可见")
-        XCTAssertTrue(app.buttons["speech-discard-audio"].waitForExistence(timeout: 8), "丢弃音频按钮应可见")
-        XCTAssertTrue(app.buttons["chat-send"].waitForExistence(timeout: 8), "send 按钮应保留固定槽位")
+        XCTAssertTrue(app.buttons["agent-interrupt-menu"].waitForExistence(timeout: 8), "Agent interrupt menu should be visible but downgraded to a quiet status")
+        XCTAssertTrue(app.otherElements["speech-waveform"].waitForExistence(timeout: 8), "Speech waveform rail should be visible")
+        XCTAssertTrue(app.buttons["speech-retry-segment"].waitForExistence(timeout: 8), "Retry segment button should be visible")
+        XCTAssertTrue(app.buttons["speech-discard-audio"].waitForExistence(timeout: 8), "Discard audio button should be visible")
+        XCTAssertTrue(app.buttons["chat-send"].waitForExistence(timeout: 8), "Send button should keep a fixed slot")
 
         try captureF3Screenshot(named: "f3_retry_preserved_audio")
     }
@@ -327,7 +327,7 @@ final class OpenCodeClientUITests: XCTestCase {
         } else if app.buttons["Settings"].exists {
             app.buttons["Settings"].tap()
         }
-        XCTAssertTrue(app.buttons["settings-current-host"].waitForExistence(timeout: 8), "Settings 应显示 Current Host")
+        XCTAssertTrue(app.buttons["settings-current-host"].waitForExistence(timeout: 8), "Settings should show Current Host")
     }
 
     @MainActor
@@ -375,7 +375,7 @@ final class HostEditorCredentialUITests: XCTestCase {
         XCTAssertTrue(alert.waitForExistence(timeout: 8), dump(app, "save-fail-no-alert"))
         let alertText = alert.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | ")
         XCTAssertTrue(
-            alertText.contains("Keychain operation failed") || alertText.contains("Keychain 操作失败"),
+            alertText.contains("Keychain operation failed"),
             dump(app, "save-fail-alert-text") + "\n" + alertText
         )
         let statusText = alertText.replacingOccurrences(of: ",", with: "")

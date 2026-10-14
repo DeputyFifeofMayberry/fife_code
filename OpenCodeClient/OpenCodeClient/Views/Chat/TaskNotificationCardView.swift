@@ -21,7 +21,7 @@ struct TaskNotificationCardView<Result: View>: View {
         self.notification = notification
         self.onOpenSession = onOpenSession
         self.result = result
-        // 默认折叠：结论在随后 assistant 消息里，卡片正文是参考材料，tap 展开。
+        // Collapsed by default: the conclusion lands in the following assistant message, the card body is reference material, tap to expand.
         self._isExpanded = State(initialValue: false)
     }
 

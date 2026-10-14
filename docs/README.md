@@ -1,58 +1,58 @@
-# OpenCode iOS Client — Docs 索引
+# OpenCode iOS Client Docs Index
 
-> 最后更新：2026-10-12（v2 server 兼容实现于 opencodev2-integration 分支；spec 文档入索引）。查阅与检索任何文档请先参考本索引。
+> Last updated: 2026-10-12 (the v2 server compatibility implementation lives on the opencodev2-integration branch; the spec docs are indexed here). Consult this index first when looking up any document.
 
-## 顶层主文档（living）
+## Top-Level Main Documents (Living)
 
-| 文件 | 角色 | 状态 |
+| File | Role | Status |
 |---|---|---|
-| `OpenCode_iOS_Client_PRD.md` | 产品需求（客户端全功能） | living |
-| `OpenCode_iOS_Client_RFC.md` | 技术架构设计（客户端全链路） | living |
-| `WORKING.md` | 进度、问题排查与决策记录（changelog） | living |
-| `tests.md` | 测试体系设计规范（Tier 1–4） | living |
-| `design.md` | 视觉设计 Spec（Quiet Tech 风格） | living |
-| `OpenCode_Web_API.md` | OpenCode server HTTP API 参考（上游快照，以官方文档与 live `/doc` 为准） | living reference |
-| `v2_server_compatibility.md` | V1/V2 server 兼容 spec（wire 契约唯一来源，客户端 v2 分支按此实现） | living，已实现待 live 验证 |
-| `lessons.md` | 工程复盘与可复用经验 | living |
+| `OpenCode_iOS_Client_PRD.md` | Product requirements (full client feature set) | living |
+| `OpenCode_iOS_Client_RFC.md` | Technical architecture design (end-to-end client) | living |
+| `WORKING.md` | Progress, troubleshooting, and decision log (changelog) | living |
+| `tests.md` | Testing architecture spec (Tiers 1–4) | living |
+| `design.md` | Visual design spec (Quiet Tech style) | living |
+| `OpenCode_Web_API.md` | OpenCode server HTTP API reference (upstream snapshot; the official docs and the live `/doc` endpoint are authoritative) | living reference |
+| `v2_server_compatibility.md` | V1/V2 server compatibility spec (the single source of truth for the wire contract; the client v2 branch implements it) | living; implemented, pending live verification |
+| `lessons.md` | Engineering retrospectives and reusable lessons | living |
 
-## features/ — 按 feature 的文档
+## features/ (Per-Feature Documents)
 
-| 目录 | feature | 文件 | 状态 |
+| Directory | Feature | Files | Status |
 |---|---|---|---|
-| `client_capabilities/` | 设备能力扩展（V0: Health export） | `prd.md` / `rfc.md` / `protocol.md` | V0 shipped；protocol 是 wire contract 的 source of truth |
-| `context_compaction/` | 手动 Context Compaction | `design.md` | proposal only，未实现 |
-| `session_finder/` | Session Finder 智能会话检索 | `design.md` | 设计草案 |
-| `background_task_notification/` | 后台 Subagent 任务通知渲染（TaskNotificationCard + synthetic 通用规则） | `design.md` | 已实现 |
-| `push_notifications/` | 后台推送通知方案 | `research.md` | 调研 |
-| `localization/` | en/zh-Hans 双语本地化 | `research.md` | Settings 已有 en/zh；research 文档偏旧 |
-| `agent_catalog_validation/` | Agent 目录校验与删除失败可见 | `notes.md` | shipped；选中 agent 对照当前 server `/agent`，delete 非 2xx 带状态码与 body |
-| `v2_server_compatibility/` | OpenCode server v2 兼容（检测 + REST/SSE 分支） | `notes.md` | 已实现（`opencodev2-integration`）；live 验证待做 |
+| `client_capabilities/` | Device capability extension (V0: Health export) | `prd.md` / `rfc.md` / `protocol.md` | V0 shipped; the protocol is the source of truth for the wire contract |
+| `context_compaction/` | Manual context compaction | `design.md` | proposal only, not implemented |
+| `session_finder/` | Session Finder, smart session retrieval | `design.md` | design draft |
+| `background_task_notification/` | Background subagent task notification rendering (TaskNotificationCard + a synthetic general rule) | `design.md` | implemented |
+| `push_notifications/` | Background push notification approach | `research.md` | research |
+| `localization/` | en/zh-Hans bilingual localization | `research.md` | Settings already has en/zh; the research doc is somewhat outdated |
+| `agent_catalog_validation/` | Agent catalog validation and visible delete failure | `notes.md` | shipped; the selected agent is checked against the current server `/agent`, and a non-2xx delete surfaces the status code and body |
+| `v2_server_compatibility/` | OpenCode server v2 compatibility (detection + REST/SSE branching) | `notes.md` | implemented (`opencodev2-integration`); live verification pending |
 
-## archive/ — 一次性工作记录与冻结决策（只进不改）
+## archive/ (One-Off Work Records and Frozen Decisions; Append Only)
 
-| 文件 | 内容 |
+| File | Content |
 |---|---|
-| `2026-06_markdown_web_preview_prd.md` / `_rfc.md` | Markdown Web Preview 子项目设计；决策已并入主 PRD §4.3.5 / 主 RFC §7.5。文件在 `docs/archive/` 本地保留，untracked + gitignored，**不随仓库分发** |
-| `2026-06_visual_writing_weapon_system.md` | 视觉与写作风格讨论稿 |
-| `2026-07_yage_fix_work.md` | opencode-official fork 修复记录 |
-| `2026-08_qwen38_rendering_fix.md` | qwen38 渲染修复记录（PR #145） |
+| `2026-06_markdown_web_preview_prd.md` / `_rfc.md` | Markdown Web Preview subproject design; decisions merged into the main PRD §4.3.5 / main RFC §7.5. The files stay local under `docs/archive/`, untracked + gitignored, **not distributed with the repo** |
+| `2026-06_visual_writing_weapon_system.md` | Visual and writing style discussion draft |
+| `2026-07_yage_fix_work.md` | opencode-official fork fix records |
+| `2026-08_qwen38_rendering_fix.md` | qwen38 rendering fix record (PR #145) |
 
-## skills/（repo 根，agent-facing 操作 skill）
+## skills/ (Repo Root, Agent-Facing Operational Skills)
 
-| 文件 | 角色 |
+| File | Role |
 |---|---|
-| `skills/client_capabilities.md` | 新增 client capability 的 canonical agent 接入入口 |
-| `skills/operate_ios_simulator.md` | iOS 模拟器自动化操作层 |
-| `skills/ui_test_tasks.md` | Tier 4 UI 测试任务工作流（workflow） |
-| `skills/ui_test_prompts/` | Tier 4 测试 Prompt 集合 |
+| `skills/client_capabilities.md` | The canonical agent entry point for adding a client capability |
+| `skills/operate_ios_simulator.md` | iOS simulator automation operation layer |
+| `skills/ui_test_tasks.md` | Tier 4 UI test task workflow |
+| `skills/ui_test_prompts/` | Tier 4 test prompt collection |
 
-## 其他
+## Other
 
-- `design_images/` — `design.md` 的 mockup 示意图（gpt-image-2 生成，非像素级最终实现稿）
-- `logo_light.png` — 应用 Logo 图标
+- `design_images/`: mockup illustrations for `design.md` (generated with gpt-image-2; not pixel-level final implementation art)
+- `logo_light.png`: the app logo icon
 
-## 约定
+## Conventions
 
-- 顶层目录仅维护 living 主文档；单项功能文档统一归入 `features/<name>/`；一次性工作记录归档至 `archive/`（文件名前缀统一遵循 `YYYY-MM_` 规范）。
-- `tmp_*` 文件属于未纳入版本跟踪的设计草稿，不进 git、不进 archive，亦不作为权威事实来源（source of truth）；关键结论须及时提炼沉淀至正式文档中。
-- 新增客户端能力时，严格依照 `skills/client_capabilities.md` 中“输出位置”一节的规范同步更新对应文档。
+- The top level holds only living main documents; per-feature documents go under `features/<name>/`; one-off work records are archived under `archive/` (filename prefixes follow the `YYYY-MM_` convention).
+- `tmp_*` files are design drafts not tracked in version control; they stay out of git and out of the archive and never serve as the source of truth; key conclusions must be distilled into the formal documents promptly.
+- When adding a client capability, update the corresponding documents strictly following the "Output location" section of `skills/client_capabilities.md`.

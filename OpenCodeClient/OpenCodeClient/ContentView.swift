@@ -303,7 +303,7 @@ struct ContentView: View {
             selectedTab = state.selectedTab
         }
         .onChange(of: sizeClass) { _, newValue in
-            // iPhone → iPad 或 split layout 切换时，将 sheet 预览迁移到中间栏预览。
+            // When switching between iPhone and iPad or toggling split layout, migrate the sheet preview to the middle-column preview.
             if newValue == .regular, let p = state.fileToOpenInFilesTab {
                 Task { @MainActor in
                     await Task.yield()
@@ -422,13 +422,13 @@ struct ContentView: View {
         }
     }
 
-    /// iPad / Vision Pro：Android-aligned three-pane layout.
+    /// iPad / Vision Pro: Android-aligned three-pane layout.
     @State private var sessionsCollapsed: Bool = false
 
     private var tabletWorkspaceLayout: some View {
         GeometryReader { geo in
             let total = geo.size.width
-            // 折叠时 Sessions 宽度收为 0，Files / Chat 平分总宽度。
+            // When collapsed, the Sessions width goes to 0 and Files / Chat split the total width evenly.
             let sessionsWidth: CGFloat = sessionsCollapsed ? 0 : total * 0.25
             let remaining = total - sessionsWidth
             let paneWidth = sessionsCollapsed ? remaining / 2 : total * 0.375
@@ -463,7 +463,7 @@ struct ContentView: View {
                 )
                 .frame(width: paneWidth)
             }
-            // 折叠时支持从屏幕左边缘右滑展开 Sessions
+            // When collapsed, swipe right from the left screen edge to expand Sessions
             .overlay(alignment: .leading) {
                 if sessionsCollapsed {
                     Color.clear
@@ -510,7 +510,7 @@ private struct TabletFilesColumn: View {
                 }
             }
             .toolbar {
-                // 折叠 Sessions 时, Files 工具栏左上显示"展开 Sessions"按钮
+                // When Sessions is collapsed, show an "Expand Sessions" button at the top left of the Files toolbar
                 if sessionsCollapsed, let onExpandSessions {
                     ToolbarItem(placement: .topBarLeading) {
                         Button(action: onExpandSessions) {
@@ -603,7 +603,7 @@ private struct TabletSessionsColumn: View {
             .navigationTitle(showSettings ? L10n.t(.navSettings) : L10n.t(.sessionsTitle))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                // Sessions 列左上"折叠"按钮 (除 settings sheet 外都显示)
+                // "Collapse" button at the top left of the Sessions column (shown everywhere except the settings sheet)
                 if !showSettings, let onCollapse {
                     ToolbarItem(placement: .topBarLeading) {
                         Button(action: onCollapse) {
@@ -621,8 +621,8 @@ private struct TabletSessionsColumn: View {
                         }
                     } else {
                         HStack(spacing: 8) {
-                            // 用 plus 图标替代 "New" 文字, 给 iPad 上 Sessions 标题留空间
-                            // (Session 也是窄列, 文字按钮会把标题挤成省略号)
+                            // Use a plus icon instead of "New" text to leave room for the Sessions title on iPad
+                            // (Sessions is a narrow column too; a text button would squeeze the title into an ellipsis)
                             Button {
                                 Task { await state.createSession() }
                             } label: {

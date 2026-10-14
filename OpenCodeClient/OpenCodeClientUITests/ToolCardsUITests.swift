@@ -30,7 +30,7 @@ final class ToolCardsUITests: XCTestCase {
         let assistantText = app.staticTexts.containing(
             NSPredicate(format: "label CONTAINS[c] 'Here are the changes I made'")
         ).firstMatch
-        XCTAssertTrue(assistantText.waitForExistence(timeout: 12), "fixture assistant text 应可见")
+        XCTAssertTrue(assistantText.waitForExistence(timeout: 12), "Fixture assistant text should be visible")
 
         let readCardPredicate = NSPredicate(format: "identifier BEGINSWITH 'toolcard.read.'")
         let writeCardPredicate = NSPredicate(format: "identifier BEGINSWITH 'toolcard.write.'")
@@ -45,7 +45,7 @@ final class ToolCardsUITests: XCTestCase {
 
         // The merged "N tool calls" disclosure row.
         let toolCalls = app.descendants(matching: .any)["toolcard.toolcalls"]
-        XCTAssertTrue(toolCalls.waitForExistence(timeout: 8), "toolcard.toolcalls 合并行应存在")
+        XCTAssertTrue(toolCalls.waitForExistence(timeout: 8), "The toolcard.toolcalls merged row should exist")
 
         // Capture the collapsed state before expanding.
         attachScreenshot(named: "oc_toolcards_collapsed")
@@ -57,8 +57,8 @@ final class ToolCardsUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 1.0)
             scrolled += 1
         }
-        XCTAssertTrue(readCards.firstMatch.waitForExistence(timeout: 4), "至少一个 toolcard.read.* 读文件卡应渲染")
-        XCTAssertTrue(writeCards.firstMatch.waitForExistence(timeout: 4), "至少一个 toolcard.write.* 写文件卡应渲染")
+        XCTAssertTrue(readCards.firstMatch.waitForExistence(timeout: 4), "At least one toolcard.read.* file-read card should render")
+        XCTAssertTrue(writeCards.firstMatch.waitForExistence(timeout: 4), "At least one toolcard.write.* file-write card should render")
 
         // Scroll back down to the merged row and expand it.
         while !toolCalls.firstMatch.exists && scrolled > 0 {
@@ -71,7 +71,7 @@ final class ToolCardsUITests: XCTestCase {
         let revealed = app.staticTexts.containing(
             NSPredicate(format: "label CONTAINS[c] 'npm test'")
         ).firstMatch
-        XCTAssertTrue(revealed.waitForExistence(timeout: 6), "展开 toolcard.toolcalls 后应出现合并工具的内容（如 'npm test'）")
+        XCTAssertTrue(revealed.waitForExistence(timeout: 6), "Merged tool content (such as 'npm test') should appear after expanding toolcard.toolcalls")
 
         // Capture the expanded state — primary visual QA artifact.
         attachScreenshot(named: "oc_toolcards")

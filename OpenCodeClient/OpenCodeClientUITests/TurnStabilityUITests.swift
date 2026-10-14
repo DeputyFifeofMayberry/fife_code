@@ -91,7 +91,7 @@ final class TurnStabilityUITests: XCTestCase {
 
     @MainActor
     private func assertExpanded(_ element: XCUIElement) {
-        XCTAssertEqual(element.value as? String, "已展开")
+        XCTAssertEqual(element.value as? String, "Expanded")
     }
 
     @MainActor
