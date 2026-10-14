@@ -254,6 +254,35 @@ struct GenerationConnectFlowTests {
         #expect(state.connectionError?.contains("200") == false)
     }
 
+    @Test @MainActor func gatewayStatusesReportProxyUnreachable() async {
+        // Live finding (2026-10-13): 502 on both legs means the reverse proxy
+        // is alive but the OpenCode process behind it is down — that deserves
+        // a proxy-specific message, not "not a recognizable API".
+        let mock = MockAPIClient()
+        await mock.setGenerationDetectionOverride(.unrecognized(healthStatus: 502, infoStatus: 502))
+        let state = makeIsolatedAppState(apiClient: mock)
+        state.configure(serverURL: "127.0.0.1:4096")
+        await state.testConnection()
+
+        #expect(!state.isConnected)
+        #expect(state.serverGeneration == .auto)
+        #expect(state.connectionError?.contains("502") == true)
+        #expect(state.connectionError?.localizedLowercase.contains("proxy") == true)
+        #expect(state.connectionError?.contains("recognizable") == false)
+    }
+
+    @Test @MainActor func mixedUnrecognizedStatusesKeepUnrecognizedMessage() async {
+        let mock = MockAPIClient()
+        await mock.setGenerationDetectionOverride(.unrecognized(healthStatus: 502, infoStatus: 404))
+        let state = makeIsolatedAppState(apiClient: mock)
+        state.configure(serverURL: "127.0.0.1:4096")
+        await state.testConnection()
+
+        #expect(!state.isConnected)
+        #expect(state.connectionError?.contains("recognizable") == true)
+        #expect(state.connectionError?.contains("404") == true)
+    }
+
     @Test @MainActor func hostSwitchResetsGeneration() async {
         let mock = MockAPIClient()
         await mock.setGenerationDetectionOverride(.v2(version: "2.0.26"))

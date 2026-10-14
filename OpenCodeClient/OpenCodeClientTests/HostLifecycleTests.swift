@@ -977,9 +977,8 @@ struct HostLifecycleTests {
         #expect(legacyDrafts[legacyTempID.uuidString] == nil)
         #expect(legacyModels[legacyTempID.uuidString] == nil)
     }
-}
 
-@MainActor
+    @MainActor
 private func assertUnreadableBlobPreserved(_ blob: Data, selectedID: UUID) {
     let suite = "opencode.w04.blob.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
@@ -1012,6 +1011,48 @@ private func assertUnreadableBlobPreserved(_ blob: Data, selectedID: UUID) {
     #expect(defaults.string(forKey: AppState.currentHostProfileIDKey) == selectedID.uuidString)
     state.currentHostProfileID = UUID()
     #expect(defaults.string(forKey: AppState.currentHostProfileIDKey) == selectedID.uuidString)
+    }
+
+    @Test @MainActor func commitHostPasswordTrimsSurroundingWhitespace() throws {
+        // Live finding (2026-10-13): a pasted password with trailing whitespace
+        // is stored verbatim, so auth fails while the profile looks correct.
+        // Save must trim.
+        let harness = LifecycleHarness()
+        defer { harness.cleanup() }
+        let state = harness.state
+        let fake = CredentialFake()
+        state.hostCredentialAccess = fake.access()
+        var profile = state.currentHostProfile!
+        try state.commitHostPassword("  barneyfife4096\n", username: "opencode", to: &profile)
+        let passwordID = try #require(profile.basicAuth?.keychainPasswordID)
+        #expect(fake.saved[passwordID] == "barneyfife4096")
+    }
+
+    @Test @MainActor func writeRuntimeCredentialsTrimsPaddedRuntimePassword() throws {
+        let harness = LifecycleHarness()
+        defer { harness.cleanup() }
+        let state = harness.state
+        let fake = CredentialFake()
+        state.hostCredentialAccess = fake.access()
+        state.password = "  barneyfife4096 "
+        var profile = state.currentHostProfile!
+        try state.writeRuntimeCredentials(into: &profile)
+        let passwordID = try #require(profile.basicAuth?.keychainPasswordID)
+        #expect(fake.saved[passwordID] == "barneyfife4096")
+    }
+
+    @Test @MainActor func whitespaceOnlyPasswordIsTreatedAsAbsent() throws {
+        let harness = LifecycleHarness()
+        defer { harness.cleanup() }
+        let state = harness.state
+        let fake = CredentialFake()
+        state.hostCredentialAccess = fake.access()
+        state.password = "   "
+        var profile = state.currentHostProfile!
+        try state.writeRuntimeCredentials(into: &profile)
+        #expect(profile.basicAuth == nil)
+        #expect(fake.saved.isEmpty)
+    }
 }
 
 private func directProfile(id: UUID = UUID(), name: String, url: String) -> HostProfile {

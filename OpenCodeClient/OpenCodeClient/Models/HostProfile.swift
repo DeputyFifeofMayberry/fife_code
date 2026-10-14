@@ -44,6 +44,19 @@ struct ConnectionDiagnostic: Codable, Equatable {
     var message: String
     var recoveryHint: String?
     var timestamp: Date
+
+    /// Clipboard text for the copy-error button: the message plus the
+    /// connection context needed to debug it remotely.
+    static func copyText(
+        message: String,
+        hostURL: String?,
+        transportLabel: String?,
+        phaseLabel: String?,
+        recoveryHint: String?,
+        timestamp: Date?
+    ) -> String {
+        "" // RED stub: implemented in the GREEN commit
+    }
 }
 
 struct BasicAuthConfig: Codable, Equatable {
