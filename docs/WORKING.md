@@ -1,156 +1,156 @@
 # OpenCode iOS Client — Working Document
 
-> 实现过程中的进度、问题与决策记录
+> A running record of progress, problems, and decisions made during implementation
 
-## 当前状态
+## Current Status
 
-### 2026-10-12 — OpenCode server v2 兼容（opencodev2-integration 分支）
+### 2026-10-12 — OpenCode server v2 compatibility (opencodev2-integration branch)
 
-- **背景**：用户 server 已是 v2.0.26，客户端只讲 v1。按 `docs/v2_server_compatibility.md`（wire 契约唯一来源）实现 v1/v2 双协议。
-- **改动**：① 检测——`HostProfile.apiGeneration`（缺失=auto、URL 变更清除），连接时 `/global/health` → `/api/info` 探测（`ServerGeneration.swift`），结果写回 profile；② REST——每个 APIClient 方法按 generation 分支（`APIClient+V2.swift`），精确状态码，archive 写直接 404、todos 空且无请求、form 回复表在 APIClient；③ 纯映射——`V2Mapper.swift` 全 spec 表，产物为既有模型；④ SSE——v2 帧 `{id,type,data}` 归一化后按 spec SSE 表翻译进既有 handler（数据路径与 v1 共用），`session.created/renamed/metadata.updated` 走 GET+upsert。
-- **两处已批准偏差**：v2 `type:"synthetic"` 消息被映射（回执卡片可见）；`isConnected` 探测成功即置位（不加 spec 的 session-list gate）。
-- **测试**：`ServerGenerationTests` / `V2MapperTests` / `V2APIWireTests` / `V2SSETests` 四个新文件（探测 saved-body、spec Unit-tests 每行一条、wire 状态码断言、SSE 翻译与收敛）。CI 待跑（Windows 无本地 Xcode）。
-- **未决**：synthetic 真实 body 未实测（fixture 按 user 行同构，若不符回退 dark）；`v2_contract_check.py` 实跑与 TestFlight 验证待做。
+- **Background**: The user's server was already v2.0.26 while the client only spoke v1. Implemented the dual v1/v2 protocol per `docs/v2_server_compatibility.md` (the single source of truth for the wire contract).
+- **Changes**: (1) Detection: `HostProfile.apiGeneration` (missing = auto, cleared on URL change); at connect time `/global/health` → `/api/info` probing (`ServerGeneration.swift`) with the result written back to the profile. (2) REST: each APIClient method branches on generation (`APIClient+V2.swift`) with exact status codes; archive writes return 404 directly, todos come back empty with no request, and the form reply table lives in APIClient. (3) Pure mapping: `V2Mapper.swift` implements the full spec table and produces the existing models. (4) SSE: v2 frames `{id,type,data}` are normalized and then translated into the existing handlers per the spec's SSE table (the data path is shared with v1); `session.created/renamed/metadata.updated` go through GET+upsert.
+- **Two approved deviations**: v2 `type:"synthetic"` messages are mapped (visible as receipt cards); `isConnected` is set as soon as probing succeeds (omitting the spec's session-list gate).
+- **Tests**: four new files, `ServerGenerationTests` / `V2MapperTests` / `V2APIWireTests` / `V2SSETests` (probe with a saved body, one test per spec Unit-tests row, wire status-code assertions, SSE translation and convergence). CI run still pending (no local Xcode on Windows).
+- **Open items**: the real synthetic body is untested (the fixture mirrors the user-row shape; fall back to dark if it does not match); the `v2_contract_check.py` live run and TestFlight verification remain to be done.
 
-- **最后更新**：2026-10-08
-- **分支**：`fix/chat-session-scroll-anchor`
-- **编译/测试**：`OpenCodeClientTests` 全绿（569 条，含新增 subagent 聚合 6 条）。UI：`SessionScrollAnchorUITests` 2/2 与 `ToolCardsUITests` 1/1 通过（iPhone 16 Pro `3EB51FEF-C951-4485-AD0F-33463C66DBEB`，iOS 18.4）。
-- **Phase**：后台 subagent 活动在父行与聊天页可见
+- **Last updated**: 2026-10-08
+- **Branch**: `fix/chat-session-scroll-anchor`
+- **Build/tests**: `OpenCodeClientTests` all green (569 tests, including 6 new subagent aggregation tests). UI: `SessionScrollAnchorUITests` 2/2 and `ToolCardsUITests` 1/1 pass (iPhone 16 Pro `3EB51FEF-C951-4485-AD0F-33463C66DBEB`, iOS 18.4).
+- **Phase**: background subagent activity is visible on the parent row and in the chat page
 
-### 2026-10-08 — 主会话 idle 时后台 subagent 仍运行，UI 不显示
+### 2026-10-08 — Background subagent keeps running while the main session is idle, UI shows nothing
 
-- **现象**：把任务派给 background subagent 后，父会话这一轮结束、状态变 `idle`，而 subagent 在它自己的子会话里 `busy`。会话列表父行显示 Idle，聊天页也没有任何进行中的迹象，看起来像什么都没在跑。
-- **原因**：状态是按会话（runner）存的（`session/status.ts`：`idle` 时从 map 删除），父 runner 结束即父 idle；subagent 有自己的 runner。客户端两边都把 `sessionStatuses` 存成全局 map，子的 busy 数据拿得到，但呈现只到单会话一层：列表父行只读 `statuses[父.id]`，子行默认收起且在折叠的嵌套里；聊天页 `isBusy` 只看当前会话。
-- **处理**：客户端派生「对话树聚合活动」，零服务端改动。`descendantBusyCountsBySession` 沿 `parentID` 把 busy 后代往上计数（不含自身），照抄既有的 attention 聚合机位。列表父行在自身非 busy、无 attention 时显示异构的次级信号（分支图标 + 中性色 +「N 个子代理运行中」，区别于自身 Running 的品牌蓝），并让这类树冒到列表顶部（折叠时也能发现）。聊天页在自身 idle 且有 busy 后代时，状态栏加一条独立「子代理正在运行」段，单条显示子会话标题、多条显示计数，点按复用 `openReferencedSession` 跳到该子会话；不占用 turn stopwatch 与 interrupt（那属于子会话自己的时钟）。文案经 AGY（gemini-3.8-flash-high）起草。
-- **测试**：`SessionTreeTests` 新增 `descendantBusyCountsRollUpAndExcludeSelf` / `...HandleRetryAndIgnoreIdle` / `...IgnoreBusySelfWhenNoChildren` / `descendantBusySessionsSortAheadOfNewerSessions` / `sessionDescendantBusyCountsReadGlobalStatusMap` / `runningDescendantSessions...` 6 条。Android 侧 `SessionTreeTest` 有对应 6 条（`./gradlew testDebugUnitTest` 绿）。
+- **Symptom**: After handing a task to a background subagent, the parent session finishes its turn and its status becomes `idle`, while the subagent stays `busy` inside its own child session. The session list parent row shows Idle and the chat page shows no sign of ongoing work, so it looks like nothing is running.
+- **Root cause**: Status is stored per session (runner) (`session/status.ts`: removed from the map on `idle`), so the parent goes idle as soon as its own runner ends; the subagent has its own runner. Both clients store `sessionStatuses` as a global map, so the child's busy data is available, but presentation only reaches the single-session level: the list parent row reads only `statuses[parent.id]`, child rows are collapsed by default and sit inside folded nesting, and the chat page's `isBusy` looks only at the current session.
+- **Fix**: The client derives "conversation-tree aggregated activity" with zero server changes. `descendantBusyCountsBySession` counts busy descendants upward along `parentID` (excluding self), modeled directly on the existing attention aggregation slot. The list parent row shows a distinct secondary signal when it is not busy itself and has no attention (branch icon + neutral color + "N subagents running", distinguished from the brand blue used for its own Running), and such trees rise to the top of the list (discoverable even while collapsed). The chat page adds a separate "subagent running" segment to the status bar when it is idle and has busy descendants: the child session title when there is one, a count when there are several; tapping reuses `openReferencedSession` to jump to that child session. It does not occupy the turn stopwatch or interrupt (those belong to the child session's own clock). Copy was drafted via AGY (gemini-3.8-flash-high).
+- **Tests**: six new tests in `SessionTreeTests`: `descendantBusyCountsRollUpAndExcludeSelf` / `...HandleRetryAndIgnoreIdle` / `...IgnoreBusySelfWhenNoChildren` / `descendantBusySessionsSortAheadOfNewerSessions` / `sessionDescendantBusyCountsReadGlobalStatusMap` / `runningDescendantSessions...`. The Android side has the matching 6 in `SessionTreeTest` (`./gradlew testDebugUnitTest` green).
 
-### 2026-09-29 — 切 session 再切回来，聊天区停在对话中间
+### 2026-09-29 — Switching session away and back leaves the chat area stuck mid-conversation
 
-- **现象**：切到别的 session 再切回来，聊天区不滚到对话最底端，而是停在中间某条消息，要手动往下翻很久才能回到最新消息。
-- **原因**：聊天 `ScrollView` 是跨 session 复用的同一个 SwiftUI 身份，`selectSession` 替换 `messages` 时底层 UIScrollView 保留旧 session 的 `contentOffset` 作为新内容的起始位置（旧 session 内容长时，落点正好在对话中间）。唯一的回底端路径是反应式链条「`scrollAnchor` 变化 + `isNearBottom` 门 + 50ms 延迟 `scrollTo`」：切换时 `onChange(currentSessionID)` 只是乐观地把 `isNearBottom` 置 true，寄望下一次 `scrollAnchor` 变化带滚。若异步 load 落地后的那一次 `scrollTo` 没有真正到底（大量内容同事务布局、偏移被 clamp 到当时已知尺寸），75ms 的底部 marker 测量随即把 `isNearBottom` 翻成 false，之后所有自动滚动被 `guard` 挡掉且无重试，视图就钉死在旧偏移量上。
-- **处理**：给每个 session 的滚动视图全新身份——`ScrollView` 链尾加 `.defaultScrollAnchor(.bottom)` + `.id(state.currentSessionID)`。切 session 时整个滚动视图重建，初始位置由默认锚点固定在底部（iOS 17+，deployment target 17.0）；既有反应式跟随机制（`isNearBottom` + `scrollAnchor`）保留，继续负责流式更新时「用户在底部则跟随」。正面副作用：identity 变化触发 `onDisappear`，切换时取消残留的 pending scroll / visibility task，消除跨 session 的滚动任务竞态。
-- **副作用**：① 内容比屏幕矮时贴底显示——短 session（1–2 条消息）从顶部显示变为贴底（标准聊天行为）；空状态（无 session / 无消息 / busy 占位）用 viewport 高度 frame（`emptySessionStateView(viewportHeight:)`）保持原顶部外观。② 行级 `@State`（thinking 卡片 / tool calls 展开态）切走再切回后重置为收起。
-- **测试**：新增离线 fixture `UITEST_SESSION_SCROLL_FIXTURE`（`SessionScrollFixture.swift`：40 turn 长 session + 短 session，`APIClientProtocol` stub 提供 `selectSession` 全链路数据，不走网络）。`SessionScrollAnchorUITests` 2 条：长 session 首屏渲染在底部（frame 断言最后一条 user 消息在屏内、第一条在屏外）、切短 session 再切回长 session 后落在底部（即本现象的回归用例）。既有 `ToolCardsUITests`（依赖 launch 自动滚底）回归通过。
+- **Symptom**: After switching to another session and back, the chat area does not scroll to the bottom of the conversation. It stops at some message in the middle, and you have to scroll down manually for a long while to reach the latest message.
+- **Root cause**: The chat `ScrollView` is a single SwiftUI identity reused across sessions. When `selectSession` replaces `messages`, the underlying UIScrollView keeps the old session's `contentOffset` as the starting position for the new content (when the old session's content is long, the landing point sits right in the middle of the conversation). The only path back to the bottom was the reactive chain of "`scrollAnchor` change + `isNearBottom` gate + 50ms-delayed `scrollTo`": on switching, `onChange(currentSessionID)` only optimistically sets `isNearBottom` to true and hopes the next `scrollAnchor` change carries the scroll. If the `scrollTo` after the async load lands does not actually reach the bottom (lots of content laid out in the same transaction, offset clamped to the size known at that moment), the 75ms bottom marker measurement immediately flips `isNearBottom` to false, after which all auto-scrolling is blocked by the `guard` with no retry, and the view stays pinned at the old offset.
+- **Fix**: Give each session's scroll view a fresh identity: append `.defaultScrollAnchor(.bottom)` + `.id(state.currentSessionID)` at the end of the `ScrollView` chain. Switching sessions rebuilds the whole scroll view, and the initial position is pinned to the bottom by the default anchor (iOS 17+, deployment target 17.0). The existing reactive follow mechanism (`isNearBottom` + `scrollAnchor`) is kept and continues to handle "follow while the user is at the bottom" during streaming updates. A positive side effect: the identity change triggers `onDisappear`, which cancels leftover pending scroll / visibility tasks on switch, eliminating cross-session scroll task races.
+- **Side effects**: (1) Content shorter than the screen is bottom-aligned; short sessions (1–2 messages) change from top-aligned to bottom-aligned (standard chat behavior), while empty states (no session / no messages / busy placeholder) use a viewport-height frame (`emptySessionStateView(viewportHeight:)`) to keep the original top-aligned look. (2) Row-level `@State` (thinking cards / tool calls expanded state) resets to collapsed after switching away and back.
+- **Tests**: Added an offline fixture `UITEST_SESSION_SCROLL_FIXTURE` (`SessionScrollFixture.swift`: a 40-turn long session plus a short session, with an `APIClientProtocol` stub providing the full `selectSession` data chain, no network). `SessionScrollAnchorUITests` has 2 tests: the long session renders its first screen at the bottom (frame assertions that the last user message is on screen and the first is off screen), and after switching to the short session and back to the long session it lands at the bottom (the regression case for this symptom). The existing `ToolCardsUITests` (which rely on auto-scroll-to-bottom at launch) still pass.
 
-### 2026-09-27 — 后台 subagent 回执渲染为 TaskNotificationCard
+### 2026-09-27 — Background subagent receipts render as TaskNotificationCard
 
-- **现象**：服务端把后台任务完成结果注入成 synthetic user message，正文是 `<task>` XML。客户端没解码 `synthetic`，这段回执被画成蓝色用户气泡里的原始 XML。
-- **处理**：`Part.synthetic` 用 `decodeIfPresent` 解码。`TaskNotificationParser` 用 range 定位最外层信封，嵌套尖括号不误切。解析成功的 synthetic text 渲染为卡片：状态图标 + 本地化状态 + 去掉英文前缀后的任务标题，结果走既有 markdown 路径，≤500 字符默认展开。展开后可打开子代理会话，复用 `selectSession`，目录不一致时切 project directory；会话不存在走 `sendError`。复制回执时复制结果正文。这类消息不显示 Edit-from-here。
-- **测试**：`TaskNotificationParserTests` / `TaskNotificationRenderingTests` 16 条；`UITEST_TASK_NOTIFICATION_FIXTURE` 覆盖展开与跳转。长结果的跳转按钮在首屏外，UI 测试展开后上滑再点。
+- **Symptom**: The server injects background task completion results as a synthetic user message whose body is `<task>` XML. The client did not decode `synthetic`, so the receipt was drawn as raw XML inside a blue user bubble.
+- **Fix**: `Part.synthetic` is decoded with `decodeIfPresent`. `TaskNotificationParser` uses a range to locate the outermost envelope so nested angle brackets are not mis-split. A synthetic text that parses successfully renders as a card: status icon + localized status + task title with the English prefix stripped; the result goes through the existing markdown path and is expanded by default at ≤500 characters. When expanded, the subagent session can be opened by reusing `selectSession`, switching project directory when it differs; a missing session goes through `sendError`. Copying the receipt copies the result body. These messages do not show Edit-from-here.
+- **Tests**: 16 tests in `TaskNotificationParserTests` / `TaskNotificationRenderingTests`; `UITEST_TASK_NOTIFICATION_FIXTURE` covers expansion and navigation. For long results the jump button is off the first screen, so the UI test swipes up after expanding before tapping.
 
-### 2026-09-26 — Grok 不显示 quota pill
+### 2026-09-26 — Grok does not show the quota pill
 
-- **现象**：选中 `xai/grok-*` 时 toolbar 没有 quota pill，GPT / GLM / Ollama 有。
-- **原因**：pill 的显示条件是 `primaryQuotaKey != nil`。映射只覆盖 `openai` → `codex/5h`、`zai-coding-plan` → `glm/5h`、`ollama-cloud` → `ollama/5h`。`xai` 落到 default，返回 nil，按钮整段不渲染。Dashboard `/api/v1/quotas` 里这条窗口是 `provider=grok`、`label=Weekly`。
-- **处理**：`xai` 映射到 `grok` / `Weekly`。首选窗口不在快照里时，改用该 provider 实际有的窗口。进入 Chat 就拉取，不等点击。有数字显示百分比；还没有数字时只显示窗口名，不画 `--`。一小时内成功拉取为品牌蓝，超过一小时或刷新失败为灰色。详情页 provider 名补上 Grok。非强制刷新的 60 秒去重不变。
+- **Symptom**: With `xai/grok-*` selected the toolbar has no quota pill, while GPT / GLM / Ollama do.
+- **Root cause**: The pill shows only when `primaryQuotaKey != nil`. The mapping covered only `openai` → `codex/5h`, `zai-coding-plan` → `glm/5h`, and `ollama-cloud` → `ollama/5h`. `xai` fell through to the default case, returned nil, and the whole button was not rendered. In the Dashboard `/api/v1/quotas`, this window is `provider=grok` with `label=Weekly`.
+- **Fix**: `xai` maps to `grok` / `Weekly`. When the preferred window is missing from the snapshot, fall back to a window the provider actually has. Data is fetched on entering Chat instead of waiting for a tap. With a number available it shows the percentage; with no number yet it shows only the window name and does not draw `--`. A successful fetch within the last hour is brand blue; older than an hour or a failed refresh is gray. The detail page's provider name gains Grok. The 60-second dedup for non-forced refreshes is unchanged.
 
-### 2026-09-21 — 模型短名单左手柄排序松手不生效
+### 2026-09-21 — Model shortlist left-handle reorder does not take effect on release
 
-- **现象**：Settings → Models 每行左侧 `line.3.horizontal` 能抬起，松手后顺序不变。
-- **原因**：排序挂在 `List` row 的 `.onDrop` 上。同列表内部的 drag session 到不了 `ShortlistDropDelegate`，`dropEntered` 不跑，`moveShortlist` 不会被调用。provider 类型（`public.utf8-plain-text`）和 `UTType.plainText` 也不一致。
-- **处理**：去掉 `onDrag` / `onDrop`。左手柄改成 UIKit pan，拖动期间只移动预览、不改数据；松手按位移 / 行高算目标下标，一次调用 `moveShortlist`。左滑删除保留。
-- **测试**：`ShortlistReorderMath` 半行阈值、越界夹紧、以及和 `moveShortlist` 的 destination 约定。真机拖放待手动验收。
+- **Symptom**: In Settings → Models, the `line.3.horizontal` handle on the left of each row can be picked up, but the order does not change after release.
+- **Root cause**: Reordering was attached to the `List` row's `.onDrop`. A drag session internal to the same list never reaches `ShortlistDropDelegate`, so `dropEntered` never runs and `moveShortlist` is never called. The provider type (`public.utf8-plain-text`) also mismatched `UTType.plainText`.
+- **Fix**: Removed `onDrag` / `onDrop`. The left handle now uses a UIKit pan: during the drag only the preview moves and data stays untouched; on release the target index is computed from displacement / row height and `moveShortlist` is called once. Swipe-to-delete is kept.
+- **Tests**: `ShortlistReorderMath` covers the half-row threshold, out-of-bounds clamping, and the destination contract with `moveShortlist`. On-device drag and drop awaits manual acceptance.
 
-### 2026-09-21 — 删除生产代码里已死的硬编码默认模型列表 `modelPresets`
+### 2026-09-21 — Delete the dead hardcoded default model list `modelPresets` from production code
 
-- **背景**：2026-08-24 起 chat picker 改读用户自管 `modelShortlist`（本地持久化，`pickerModelPresets` = `modelShortlist.map(asPreset)`），settings catalog 改为从 `/provider` registry 实时拉取（`catalogModelPresets`）。`AppState.swift` 的硬编码默认数组 `modelPresets` 在生产代码已零引用，仅被单测当作 seed fixture。
-- **处理**：删除 `AppState.swift` 的 `modelPresets` 数组（保留 `selectedModelIndex` 默认值及全部 live 逻辑）。测试 seed 集中到 `TestDoubles.swift` 的共享 fixture `testSeedPresets`（内容与原数组逐字节一致），`SessionFlowTests.makeState` 与 `AIUsageQuotaTests` 改为 `addModelsToShortlist(testSeedPresets)`。
-- **单测**：3 条测「默认 preset 列表」行为的废弃用例（`defaultSelectionUsesGemini37Flash` / `defaultPresetsIncludeDeepSeekLocal` / `defaultPresetsExcludeRemovedGPTVariants`）删除；3 条 aging 用例（legacy GLM / GPT / Kimi 映射）保留，断言从 `state.modelPresets[...]` 改为 `state.pickerModelPresets[...]`（seed 后逐位等价）。顺手修正 `ModelsTests` 遗留测试名 `grok46ShortName` → `grok47ShortName`（用例体早已是 4.7）。
-- **影响**：无运行时行为变化，纯死代码 + 测试清理。`xcodebuild test` 需串行跑（共享 DerivedData）。
+- **Background**: Since 2026-08-24 the chat picker reads the user-managed `modelShortlist` (persisted locally, `pickerModelPresets` = `modelShortlist.map(asPreset)`), and the settings catalog pulls live from the `/provider` registry (`catalogModelPresets`). The hardcoded default array `modelPresets` in `AppState.swift` had zero references left in production code and was used only by unit tests as a seed fixture.
+- **Fix**: Deleted the `modelPresets` array from `AppState.swift` (keeping the `selectedModelIndex` default and all live logic). The test seed moved into a shared fixture `testSeedPresets` in `TestDoubles.swift` (byte-identical to the original array), and `SessionFlowTests.makeState` plus `AIUsageQuotaTests` now call `addModelsToShortlist(testSeedPresets)`.
+- **Unit tests**: Deleted 3 obsolete cases testing "default preset list" behavior (`defaultSelectionUsesGemini37Flash` / `defaultPresetsIncludeDeepSeekLocal` / `defaultPresetsExcludeRemovedGPTVariants`); kept 3 aging cases (legacy GLM / GPT / Kimi mappings) with assertions changed from `state.modelPresets[...]` to `state.pickerModelPresets[...]` (bit-for-bit equivalent after seeding). Also fixed the stale test name `grok46ShortName` → `grok47ShortName` in `ModelsTests` (the case body was already 4.7).
+- **Impact**: No runtime behavior change; pure dead code + test cleanup. `xcodebuild test` must run serially (shared DerivedData).
 
-### 2026-09-21 — Grok 4.7 模型 preset 升级
+### 2026-09-21 — Grok 4.7 model preset upgrade
 
-- xAI 发布 Grok 4.7，按 2026-08-14 的 4.5→4.6 升级先例处理：尾部 `Grok 4.6` / `xai/grok-4.6` preset 升级为 `Grok 4.7` / `grok-4.7`（`AppState.swift` 模型列表、`ModelPreset.suggestedShortName` 同步改名，不加 canonical 遗留映射）。
-- 测试同步更新：`ModelShortlistTests` / `ModelsTests` / `SessionFlowTests` 中的 `grok-4.6` / `Grok 4.6` 全部改为 4.7，三个 suite 定向 `xcodebuild test` 通过（iOS Simulator）。
-- 不涉及 preset 顺序、数量或其他模型条目。
+- xAI released Grok 4.7, handled per the 2026-08-14 4.5→4.6 upgrade precedent: the tail `Grok 4.6` / `xai/grok-4.6` preset is upgraded to `Grok 4.7` / `grok-4.7` (renamed in the `AppState.swift` model list and in `ModelPreset.suggestedShortName` in step, with no canonical legacy mapping added).
+- Tests updated in step: `grok-4.6` / `Grok 4.6` in `ModelShortlistTests` / `ModelsTests` / `SessionFlowTests` all changed to 4.7, and targeted `xcodebuild test` passes for the three suites (iOS Simulator).
+- Preset order, count, and other model entries are untouched.
 
-### 2026-09-13 — 文档归档落位：Markdown Web Preview 子文档
+### 2026-09-13 — Document archive placement: Markdown Web Preview sub-documents
 
-- **问题**：`.gitignore`（第 67–70 行）、`docs/README.md` 的 archive 索引、主 PRD §4.3.5、主 RFC §7.5 都指向 `docs/archive/2026-06_markdown_web_preview_prd.md` / `_rfc.md`，但两份子文档实际还留在旧路径 `docs/Markdown_Web_Preview_PRD.md` / `_RFC.md`。旧路径不匹配 ignore 规则，所以它们既没进 git、也没被忽略，长期以 untracked 形式挂在 `docs/` 根下。2026-08 那次只做了「合并进主 PRD/RFC + 写 ignore 规则 + 写文档说明」，文件移动没执行，`docs/archive/` 里其实没有这两个文件。
-- **处理**：把两份文件移到文档指定的归档路径，正文零改动（mtime 仍为 2026-06-14）。落位后 `git status` 干净，上面几处引用全部指向真实存在的文件。
-- **含义**：两份文件仍按既定策略 untracked + gitignored，**不随仓库分发**。canonical 决策在主 PRD §4.3.5 / 主 RFC §7.5，决策过程在本文件 2026-06-14 条目。
+- **Problem**: `.gitignore` (lines 67–70), the archive index in `docs/README.md`, main PRD §4.3.5, and main RFC §7.5 all point to `docs/archive/2026-06_markdown_web_preview_prd.md` / `_rfc.md`, but the two sub-documents actually still sat at the old paths `docs/Markdown_Web_Preview_PRD.md` / `_RFC.md`. The old paths do not match the ignore rules, so the files were neither tracked nor ignored and hung around untracked at the `docs/` root. The 2026-08 pass only did "merge into the main PRD/RFC + write ignore rules + document the decision"; the file move was never executed, and `docs/archive/` in fact did not contain these two files.
+- **Fix**: Moved the two files to the archive paths the docs specify with zero content changes (mtime still 2026-06-14). After placement `git status` is clean and all the references above point to files that actually exist.
+- **Implication**: Both files remain untracked + gitignored per the established policy and are **not distributed with the repo**. The canonical decision lives in main PRD §4.3.5 / main RFC §7.5, and the decision history is in this file's 2026-06-14 entry.
 
-### 2026-09-12 — LLM throughput 显示（per-message 脚注 + Context sheet）
+### 2026-09-12 — LLM throughput display (per-message footnote + Context sheet)
 
-- **动机**：想看 LLM 工作时的真实生成速率（"x 秒生成 y 个 token"）。在 live server（4096）上实测确认：每条 assistant 消息（= 一个 LLM step）已带 `time.created` / `time.completed` / `tokens`。纯客户端可算，server 零改动。~~相邻 step 间隔仅 1–3ms、单步耗时跟随 output token 数而非 tool 数量——说明该窗口是干净的 LLM 生成时间（tool 执行落在 step 之间，不计入）~~ → **该判断 2026-09-13 证伪，见下方修正段**。
-- **口径**：分母 = step 的 wall-clock（`completed - created`，含 prefill + 生成 + **tool 执行**）；分子 = `output + reasoning`（模型实际吐出的 token，不含 input/prefill，也不含 cache read/write）。`completed` 为 nil（生成中）、窗口为 0 或 token 为 0 时不出数。
-- **实现**：
-  - `Message.generatedTokens` / `Message.throughput` / `Message.throughputLabel`（`Models/Message.swift`）：核心计算；label "≥10 取整、<10 一位小数"。
-  - 每条 assistant 消息 footer（`MessageRowView`）：`provider/model` 后追加 ` | X t/s`；生成中只显示 model（无 completed 时间戳）。
-  - Context sheet（`ContextUsageView`）顶部新增 Throughput section：session 级平均速率（总 token / 总 LLM 时长）、生成 token 数（output+reasoning）、生成总耗时。
-  - L10n 新增 5 个 key（en/zh）。
-- **测试**：新增 12 个单测——`MessageThroughputTests` 10 个（basic / 含 reasoning / 生成中 nil / 零窗口 nil / 无 token nil / 缺 tokens 字段 nil / 负窗口 nil / label 整数 / label 小数 / label nil）+ `ContextUsageThroughputTests` 2 个（session 聚合并排除生成中 / 无已完成 step 时 nil）全过；全量单测回归 427/427（signed build）。
-- **Review**：GLM-5.3 subagent 一审 approve-with-nits，无 correctness 问题；据 review 收敛两处：throughput 数字格式抽成 `Message.throughputText` 单一实现（footer 与 sheet 共用，避免漂移）；sheet 的 "Output tokens" 标签改为 "Generated tokens"（因口径是 output+reasoning，避免与 Tokens section 的 Output 行混淆）。
-- **SSE 扩展：best-effort decoding（2026-09-12 追加，2026-09-13 收敛为 decoding-only）**：
-  - 背景：单一 general throughput 把 prefill 和 decode 揉在一起（分母 `created→completed` 含 prefill）。目标是拆出一个纯生成速率。
-  - 数据源：server **不持久化 first-token 时间**（`message-updater` 只写 `created`/`completed`），所以历史消息算不出纯 decode；但实时 SSE 流有逐 token 的 `message.part.delta`（`field`/`messageID`，无 server 时间戳）和 `message.part.updated`（part 创建/收尾、step-finish 带 `tokens.output`）。
-  - **best-effort 口径**：只看"是否观察到 SSE"。观察到就给 decoding，没观察到（翻历史 / 重启 / 纯 REST 加载）就不给，footer 只留 general。
-  - **时钟**：全部用 client 接收时间（firstVisible=首个可见 token 到达、lastVisible=最后一个可见 token 到达），避免 server/client 时钟 skew（SSH 远端场景）。decoding = `tokens.output` / (lastVisible - firstVisible)；分子只算 output，prefill 与 reasoning 都落在窗口之前被排除，tool 执行落在窗口之后被排除。step-finish 的到达时间**不**参与窗口（它在 tool 跑完之后才到），只提供 `tokens.output`；只观测到一个可见 token（窗口宽度为 0）时不出数，不编造。
-  - 实现：`MessageStore.StepTiming`（per assistant messageID，`firstVisibleAt`/`lastVisibleAt`/`outputTokens` + `decode`/`decodeLabel`）；`handleSSEEvent` 新增 `message.part.delta` case、`message.updated` 建 step 条目、`message.part.updated` 收 delta 与 step-finish；`stepTimings` **不**随 `resetStreaming()` 清空（那在每条 message 更新都会触发，含本 step 自身），改为 session-scoped clear（`clearCurrentSessionViewState` / `removeTimings(forSession:)`）时清理。footer（`MessageRowView`）：`provider/model | <general> t/s | <decode> t/s decoding`，最后一段仅在 SSE 观察到时出现。
-  - **TTFT 已删除（2026-09-13）**：原设计在 footer 里带 `TTFT: 3.2s`（firstVisible - stepStart）。实机跑下来这条几乎从不出现（客户端看到 assistant `message.updated` 与首个 token 到达之间的窗口不可靠，且它不影响使用者要的"真实生成速率"），按"没用的东西不留"删掉：`StepTiming` 去掉 `stepStart` / `ttft` / `ttftLabel`，footer 去掉该段，相关单测一并删除。`recordStepStart` 保留，作用改为"标记这个 step 从开头就被观察到"，仍是 decoding 窗口的前置条件。
-  - 测试：SessionFlow 三条（SSE 流捕获：reasoning delta 不进可见窗口、tool-input delta 建立窗口且 step-finish 不移动窗口右端、非当前 session 忽略）+ `StepTimingTests`（decode 计算与 label、窗口两端/宽度为 0/token 缺失各 nil 边界）。
-  - **已知边界**：decoding 仅当前 app 会话内、观察到流的那一步有效；重启或纯历史消息回退为 general only。若需历史回溯纯 decode，必须 patch server 给 assistant 消息加 first-token 时间戳并落库。
-- **已知边界**：~~tool 耗时本次不做（用户明确不感兴趣）；实时 SSE 带 tool 时间戳，但持久化 history 的 V1 message list 不存 tool `time`，故历史无法回溯 tool 耗时~~ → **2026-09-13 更正：tool part 的 `state.time` 在持久化 payload 里存在（本地 DB 全量 2 万+ tool part 均有 start/end），且必须从分母里扣掉，见下方修正段**。
-- **合并**：PR #165（分支 `feat/llm-throughput`）。
+- **Motivation**: Wanted to see the real generation rate while the LLM works ("y tokens per x seconds"). Confirmed by measurement on the live server (4096): every assistant message (= one LLM step) already carries `time.created` / `time.completed` / `tokens`. Computable purely client-side with zero server changes. ~~Adjacent steps were 1–3ms apart and per-step time tracked output token count rather than tool count, suggesting the window was clean LLM generation time (tool execution falls between steps and is not counted)~~ → **That judgment was falsified on 2026-09-13, see the correction section below**.
+- **Definition**: The denominator is the step's wall-clock time (`completed - created`, including prefill + generation + **tool execution**); the numerator is `output + reasoning` (tokens the model actually emitted, excluding input/prefill and also cache read/write). No number is produced when `completed` is nil (still generating), the window is 0, or tokens are 0.
+- **Implementation**:
+  - `Message.generatedTokens` / `Message.throughput` / `Message.throughputLabel` (`Models/Message.swift`): core computation; label "rounded at ≥10, one decimal below 10".
+  - Footer on every assistant message (`MessageRowView`): appends ` | X t/s` after `provider/model`; while generating, only the model is shown (no completed timestamp).
+  - New Throughput section at the top of the Context sheet (`ContextUsageView`): session-level average rate (total tokens / total LLM time), generated token count (output+reasoning), and total generation time.
+  - 5 new L10n keys (en/zh).
+- **Tests**: 12 new unit tests, all passing: 10 in `MessageThroughputTests` (basic / with reasoning / nil while generating / nil for zero window / nil without tokens / nil when the tokens field is missing / nil for negative window / integer label / decimal label / nil label) + 2 in `ContextUsageThroughputTests` (session aggregation excludes in-progress / nil when there is no completed step); full unit test regression 427/427 (signed build).
+- **Review**: A GLM-5.3 subagent's first review was approve-with-nits with no correctness issues; two points were tightened per the review: the throughput number formatting was extracted into a single implementation, `Message.throughputText` (shared by footer and sheet to avoid drift), and the sheet's "Output tokens" label changed to "Generated tokens" (since the definition is output+reasoning, avoiding confusion with the Output row in the Tokens section).
+- **SSE extension: best-effort decoding (added 2026-09-12, narrowed to decoding-only on 2026-09-13)**:
+  - Background: a single general throughput mixes prefill and decode together (the denominator `created→completed` includes prefill). The goal was to split out a pure generation rate.
+  - Data source: the server **does not persist first-token time** (`message-updater` writes only `created`/`completed`), so pure decode cannot be computed for historical messages; but the live SSE stream carries per-token `message.part.delta` (`field`/`messageID`, no server timestamps) and `message.part.updated` (part creation/finalization, with step-finish carrying `tokens.output`).
+  - **Best-effort definition**: only "was SSE observed" matters. If observed, decoding is shown; if not (browsing history / restart / pure REST load), it is not, and the footer keeps only general.
+  - **Clock**: everything uses client receive time (firstVisible = arrival of the first visible token, lastVisible = arrival of the last visible token) to avoid server/client clock skew (SSH remote scenario). decoding = `tokens.output` / (lastVisible - firstVisible); the numerator counts output only, prefill and reasoning both fall before the window and are excluded, and tool execution falls after the window and is excluded. The step-finish arrival time does **not** participate in the window (it arrives only after tools finish) and only supplies `tokens.output`; when only one visible token is observed (window width 0), no number is produced rather than inventing one.
+  - Implementation: `MessageStore.StepTiming` (per assistant messageID, `firstVisibleAt`/`lastVisibleAt`/`outputTokens` + `decode`/`decodeLabel`); `handleSSEEvent` gains a `message.part.delta` case, `message.updated` creates the step entry, and `message.part.updated` collects deltas and step-finish; `stepTimings` is **not** cleared by `resetStreaming()` (that fires on every message update, including this step's own), and is instead cleared on session-scoped clears (`clearCurrentSessionViewState` / `removeTimings(forSession:)`). Footer (`MessageRowView`): `provider/model | <general> t/s | <decode> t/s decoding`, where the last segment appears only when SSE was observed.
+  - **TTFT removed (2026-09-13)**: the original design put `TTFT: 3.2s` in the footer (firstVisible - stepStart). On a real run this line almost never appeared (the window between the client seeing assistant `message.updated` and the first token arriving is unreliable, and it does not affect the "real generation rate" users wanted), so it was deleted under the "keep nothing useless" rule: `StepTiming` dropped `stepStart` / `ttft` / `ttftLabel`, the footer dropped the segment, and the related unit tests were removed with it. `recordStepStart` stays, repurposed to "mark that this step was observed from the start", still a precondition for the decoding window.
+  - Tests: three SessionFlow tests (SSE stream capture: reasoning deltas do not enter the visible window, tool-input deltas establish the window and step-finish does not move the window's right end, non-current sessions are ignored) + `StepTimingTests` (decode computation and label, nil boundaries for window ends / zero width / missing tokens).
+  - **Known limits**: decoding is valid only within the current app session, for the step where the stream was observed; after a restart or for pure history it falls back to general only. Historical pure-decode reconstruction would require patching the server to add a first-token timestamp to assistant messages and persist it.
+- **Known limits**: ~~tool time is out of scope for now (the user explicitly is not interested); live SSE carries tool timestamps, but the persisted-history V1 message list does not store tool `time`, so tool time cannot be reconstructed for history~~ → **Corrected 2026-09-13: tool part `state.time` does exist in the persisted payload (the full local DB, 20k+ tool parts, all have start/end), and it must be subtracted from the denominator, see the correction section below**.
+- **Merged**: PR #165 (branch `feat/llm-throughput`).
 
-#### 2026-09-13 修正：tool 执行时间在 step 窗口内，必须从分母扣除
+#### 2026-09-13 correction: tool execution time falls inside the step window and must be subtracted from the denominator
 
-- **触发**：实机跑出"LLM 输出了一个很大的 write tool call，但 throughput 特别低"。
-- **结论：分子没问题，tool call 的 token 一直在算。** `output` = provider 的 output tokens − reasoning，模型为 tool call 生成的 JSON 参数属于 output tokens。用本地 OpenCode DB（`~/.local/share/opencode/opencode.db`）复核：910 个 tool part 中 901 个的所属 step `tokens.output` 与 tool input 体量一致（其余 9 个是 `shell`/synthetic 路径，output 恒为 0）；write 类最大样本 5426 字符 input 对应 2748 output tokens。所以"没算 tool token"是误诊。
-- **真因**：分母 `created → completed` **包含 tool 的执行时间**。两个 server 路径都如此：legacy processor 在 stream 内执行 tool、`completed` 在 tool 结束后才写；V2 runner 先 `awaitToolFibers` 再发 `SessionEvent.Step.Ended`。实测证据：`msg_085d6384a001` 的 bash tool 跑了 417,204ms，step 窗口 419,309ms，output 63 tokens → 显示 0.1 t/s；`msg_dbd74d5d0001` 的 write tool 跑 48,345ms，step 窗口 56,157ms，529 tokens → 显示 9.4 t/s（扣掉 tool 时间应为 67.7 t/s）。
-- **修复（客户端，仍零 server 改动）**：
-  - `PartStateBridge` 解析 `state.time.start/end`，`Part.toolRunSeconds` / `MessageWithParts.toolRunSeconds` 汇总；`Message.throughputExcludingToolSeconds` = `generatedTokens / (stepSeconds - toolRunSeconds)`（tool 时间 ≥ 窗口时回退原始窗口，不产生负分母）。
-  - footer 与 Context sheet 的 general 数字都改用扣 tool 后的口径；sheet 的 session 平均同样逐 step 扣除。
-  - SSE decoding 窗口的右端点从"step-finish part 到达"改为"最后一个可见 delta 到达"（step-finish 在 tool 跑完之后才到，用它收尾等于把 tool 时间加回 decode）；同时 tool-input delta 记入可见 token，使"只输出 tool call、没有正文"的 step 也能算出 decoding，而不是只剩被 tool 时间污染的 general。
-  - `StepTiming.firstTextAt` 更名 `firstVisibleAt`，新增 `lastVisibleAt`；TTFT 相关字段（`stepStart`/`ttft`/`ttftLabel`）随后删除，见上节。
-- **残留边界**：persisted 口径仍含 prefill（历史数据无法拆出首 token 时间），SSE 观察到的 step 才能给出纯 decode 速率；Context sheet 的 session 平均只覆盖当前已加载的消息（分页外的历史不计）；tool 时间缺失（running、老 payload）时回退原始窗口。
-- **测试**：`MessageThroughputTests` +3（扣 tool / tool 时间超窗口回退 / 运行中 nil）、新增 `MessageToolTimingTests` 3 条（state.time 汇总、缺 timing 为 0、running 无 end 不计）、`ContextUsageThroughputTests` +1（聚合扣 tool）、`StepTimingTests` +2（decode 用 lastVisibleAt 收尾、tool-only step 有窗口）、`AppStateFlowTests` +1 并改写既有 1 条（tool-input delta 建立窗口、step-finish 不移动窗口右端）。**聚焦 5 个 suite 29 条全过**（Xcode 27 beta + iOS 27.0 模拟器，`test-without-building`）。
-- **测试环境坑**：`/Applications/Xcode.app`（26.6）缺 iOS platform 组件，iOS 模拟器 destination 全部不可用；Xcode 27 beta 能跑，但 `AIUsageQuotaTests.swift` 与 beta 的默认 isolation 不兼容（actor 无法 conform 被推断为 global-actor-isolated 的 protocol），跑测试时临时移出该文件、跑完复原，未改动其内容。
+- **Trigger**: a real run produced "the LLM emitted a very large write tool call, yet throughput was extremely low".
+- **Conclusion: the numerator is fine; tool call tokens were being counted all along.** `output` = provider output tokens − reasoning, and the JSON arguments the model generates for a tool call count as output tokens. Cross-checked against the local OpenCode DB (`~/.local/share/opencode/opencode.db`): of 910 tool parts, 901 have a step whose `tokens.output` matches the tool input volume (the other 9 are `shell`/synthetic paths where output is always 0); the largest write sample had 5426 characters of input corresponding to 2748 output tokens. So "tool tokens were not counted" was a misdiagnosis.
+- **Real cause**: the denominator `created → completed` **includes tool execution time**. Both server paths behave this way: the legacy processor executes tools inside the stream and writes `completed` only after tools finish; the V2 runner awaits `awaitToolFibers` before emitting `SessionEvent.Step.Ended`. Measured evidence: `msg_085d6384a001`'s bash tool ran 417,204ms with a step window of 419,309ms and 63 output tokens → displayed 0.1 t/s; `msg_dbd74d5d0001`'s write tool ran 48,345ms with a step window of 56,157ms and 529 tokens → displayed 9.4 t/s (67.7 t/s once tool time is removed).
+- **Fix (client-side, still zero server changes)**:
+  - `PartStateBridge` parses `state.time.start/end`; `Part.toolRunSeconds` / `MessageWithParts.toolRunSeconds` aggregate it; `Message.throughputExcludingToolSeconds` = `generatedTokens / (stepSeconds - toolRunSeconds)` (falls back to the original window when tool time ≥ the window, so the denominator never goes negative).
+  - The general numbers in the footer and the Context sheet both switch to the tool-subtracted definition; the sheet's session average subtracts tool time per step as well.
+  - The right endpoint of the SSE decoding window changed from "step-finish part arrival" to "arrival of the last visible delta" (step-finish arrives only after tools complete, so ending the window there would add tool time back into decode); tool-input deltas also count as visible tokens, so a step that emits only a tool call with no body still gets a decoding rate instead of only a general rate polluted by tool time.
+  - `StepTiming.firstTextAt` renamed to `firstVisibleAt`, with `lastVisibleAt` added; the TTFT-related fields (`stepStart`/`ttft`/`ttftLabel`) were then deleted, see the section above.
+- **Remaining limits**: the persisted definition still includes prefill (historical data cannot recover first-token time), and only steps observed over SSE can yield a pure decode rate; the Context sheet's session average covers only currently loaded messages (history beyond pagination is not counted); when tool time is missing (running, old payloads) it falls back to the original window.
+- **Tests**: `MessageThroughputTests` +3 (tool subtracted / fallback when tool time exceeds the window / nil while running), new `MessageToolTimingTests` with 3 cases (state.time aggregation, missing timing counts as 0, running with no end not counted), `ContextUsageThroughputTests` +1 (aggregation subtracts tool), `StepTimingTests` +2 (decode ends at lastVisibleAt, tool-only step has a window), `AppStateFlowTests` +1 plus a rewrite of 1 existing case (tool-input deltas establish the window, step-finish does not move the window's right end). **All 29 tests across the 5 focused suites pass** (Xcode 27 beta + iOS 27.0 simulator, `test-without-building`).
+- **Test environment pitfall**: `/Applications/Xcode.app` (26.6) was missing the iOS platform component, making every iOS simulator destination unusable; Xcode 27 beta could run, but `AIUsageQuotaTests.swift` was incompatible with the beta's default isolation (an actor cannot conform to a protocol inferred as global-actor-isolated), so the file was temporarily moved out for the test run and restored afterwards, with no content changes.
 
-### 2026-09-10 — iPhone 文件预览左缘右滑关闭
+### 2026-09-10 — iPhone file preview closes with an edge swipe from the left edge
 
-- compact-width Chat 里，点文件 tool call 打开的 docked `ChatInlineFilePreview` 除 toolbar `xmark` 外，可用标准 iOS 返回手势关闭：从屏幕物理左缘起手、向右拖够距离。
-- 几何与 session list 打开手势共用 `EdgeSwipeGeometry`（左缘 32pt、横向 ≥ 72pt、纵向漂移 ≤ 56pt），`FilePreviewEdgeSwipeBehavior` / `SessionListEdgeSwipeBehavior` 两个入口；regular/iPad 中间栏预览不启用。
-- 手势条叠在预览内容区（导航栏 xmark 与底部 composer 不覆盖）；条本身 `.ignoresSafeArea(.container, edges: .horizontal)`，意图是横屏刘海侧也从物理左缘起手，而不是从安全区 inset 后的内容左缘起手。竖屏已真机确认；横屏尚未验证，若失效则补一层 flexible leading frame 再 ignoresSafeArea。
-- Markdown Web Preview 的 `WKWebView` 会吃掉 SwiftUI `Color.clear` overlay 的 hit-testing，左缘 `DragGesture` 根本收不到 began。关闭条改为 UIKit `UIView` 抢左侧 32pt，并打 `FilePreviewSwipe` 日志（appear / touchBegan / began / changed / ended+decision / xmark）。关闭方向是**从左缘向右滑**，向左滑会记 `swipedWrongDirection`。
-- 真机 log：`touchBegan x=7` 已在 32pt 条内，但 `UIPanGestureRecognizer` 的 `.began` 发生在手指已右移到 `startX=73` 时，用这个点做左缘判定会得到 `startTooFarFromEdge`。改成按下坐标做 origin，位移用当前点减按下点。
-- 代价：最左侧约 32pt 是关闭手势保留区，该条内的代码横向滚动 / 图片平移不可达，这是有意为之。
-- 测试：`FilePreviewEdgeSwipeBehaviorTests`（合法右滑、非左缘、过大纵向、过短横向、反方向左滑 decision）。
+- In compact-width Chat, the docked `ChatInlineFilePreview` opened by tapping a file tool call can be closed with the standard iOS back gesture in addition to the toolbar `xmark`: start at the screen's physical left edge and drag right far enough.
+- The geometry is shared with the session list open gesture via `EdgeSwipeGeometry` (left edge 32pt, horizontal ≥ 72pt, vertical drift ≤ 56pt), with two entry points, `FilePreviewEdgeSwipeBehavior` / `SessionListEdgeSwipeBehavior`; the regular/iPad middle-column preview does not enable it.
+- The gesture strip overlays the preview content area (it does not cover the navigation bar xmark or the bottom composer); the strip itself uses `.ignoresSafeArea(.container, edges: .horizontal)`, intended so that in landscape the gesture also starts at the physical left edge on the notch side rather than at the content edge after safe-area insets. Confirmed on device in portrait; landscape is unverified, and if it fails there the fallback is to add a flexible leading frame before the ignoresSafeArea.
+- The Markdown Web Preview's `WKWebView` swallows hit-testing for a SwiftUI `Color.clear` overlay, so the left-edge `DragGesture` never receives began. The close strip became a UIKit `UIView` that claims the left 32pt, logging `FilePreviewSwipe` (appear / touchBegan / began / changed / ended+decision / xmark). The close direction is **a rightward swipe from the left edge**; a leftward swipe logs `swipedWrongDirection`.
+- On-device log: `touchBegan x=7` was already inside the 32pt strip, but the `UIPanGestureRecognizer`'s `.began` fired only after the finger had moved right to `startX=73`; using that point for the edge test yields `startTooFarFromEdge`. The fix uses the touch-down coordinate as the origin and computes displacement as the current point minus the touch-down point.
+- Cost: the leftmost ~32pt is reserved for the close gesture, so horizontal code scrolling / image panning starting inside that strip is unreachable. This is intentional.
+- Tests: `FilePreviewEdgeSwipeBehaviorTests` (valid right swipe, non-left-edge start, excessive vertical drift, too-short horizontal distance, wrong-direction left swipe decision).
 
-### 2026-09-07 — SSH 密钥 fail-closed（issue #161）
+### 2026-09-07 — SSH keys fail-closed (issue #161)
 
-- **背景**：issue #161 报告设备 Ed25519 密钥对会被静默重新生成：私钥 Keychain 读取瞬时失败（设备未解锁时的 `errSecInteractionNotAllowed`）会让 `ensureKeyPair()` fail-open，烧掉旧身份并覆盖公钥缓存，服务端 authorized_keys 随之失效；加剧因素包括 `KeychainHelper` 未设 `kSecAttrAccessible`（默认 WhenUnlocked）、save/load 忽略 OSStatus、连接与视图热路径调用会生成的函数。
-- **修复（read/create 分离）**：新增只读 `getKeyPair()`——永不生成，先从私钥派生公钥校验缓存一致性（不匹配以私钥为准修复缓存），Keychain 暂不可读抛新错误 `SSHError.keyUnavailable`，私钥确实不存在抛 `.keyNotFound`；`ensureKeyPair()` 收窄为仅引导使用，仅在 Keychain 返回 `errSecItemNotFound`（条目真正缺失）时生成，其余错误抛 `.keyUnavailable` 且不触碰已存密钥；`rotateKey()` 保留生成权限（用户显式触发）。
-- **调用点改写**：`connect()` 的 `_ = try? ensureKeyPair()` 改为 do/catch 显式传播，密钥错误时 disconnect 并进入 `.error`（fail closed）；视图侧 `generateOrGetPublicKey()` 更名为 `readPublicKey()` 并改走 `getKeyPair()`（Settings onAppear 预取、公钥 sheet、三处 Copy 公钥），瞬时失败复用既有错误 UI 提示解锁设备。
-- **Keychain 加固**：Keychain 条目统一设置 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`（私钥与密码/token 共用同一写入路径；首次解锁后锁屏也可读，支持重启后后台连接，且不随 iCloud Keychain 迁移）；`KeychainHelper.save/load/delete` 全部传播 OSStatus，`loadData` 仅在 `errSecItemNotFound` 时返回 nil（区分"不存在"与"读取失败"）；`save` 改为 update-then-add 且仅在私钥写入校验通过后才写 UserDefaults 公钥缓存。
-- **Rotate 加固（review 后补充）**：`rotateKey()` 不再先删后生成，改为先生成新密钥并用 update-then-add `savePrivateKey` 原地覆盖，保存成功后才更新公钥缓存——保存失败时旧身份保持不变；Settings Rotate 回调的错误改为写入 `publicKeyLoadError` 提示用户，不再静默吞掉。
-- **测试隔离**：`SSHKeyManagerTests` 标注 `@Suite(.serialized)`（与同文件 `HostProfileTests` 一致），避免多条测试并发修改共享 Keychain/UserDefaults 状态造成 flake。
-- **验证**：build 通过（xcodebuild build，指定 simulator destination）；`SSHKeyManagerTests` 定向 7/7 通过（2 既有 + 5 新增：getKeyPair 不铸造、bootstrap 幂等、派生修复过期缓存、KeychainHelper update-in-place/delete、hasKeyPair 生命周期）；全量 451 个测试 443 通过 / 4 失败 / 4 跳过，失败全部为 UI fixture 测试（CarMode/AIUsageQuota/SpeechStrategies/ToolCards），在干净基线上复跑同样失败，属本机环境预存 flake，与本次改动无关。注意：本机跑 Keychain 相关测试必须去掉 `CODE_SIGNING_ALLOWED=NO`（未签名宿主 app 无 Keychain entitlement，报 -34018）。
+- **Background**: issue #161 reported that the device Ed25519 key pair could be silently regenerated: a transient Keychain read failure for the private key (`errSecInteractionNotAllowed` while the device is locked) made `ensureKeyPair()` fail-open, burning the old identity and overwriting the public key cache, which invalidated the server-side authorized_keys; aggravating factors included `KeychainHelper` not setting `kSecAttrAccessible` (default WhenUnlocked), save/load ignoring OSStatus, and connect and view hot paths calling a function that can generate keys.
+- **Fix (read/create separation)**: added a read-only `getKeyPair()` that never generates: it first derives the public key from the private key to verify cache consistency (repairing the cache from the private key on mismatch), throws the new error `SSHError.keyUnavailable` when the Keychain is temporarily unreadable, and throws `.keyNotFound` when the private key truly does not exist. `ensureKeyPair()` was narrowed to bootstrap-only use: it generates only when the Keychain returns `errSecItemNotFound` (the entry is genuinely missing), throws `.keyUnavailable` on any other error, and never touches existing keys. `rotateKey()` keeps generation permission (explicitly user-triggered).
+- **Call site rewrites**: `connect()`'s `_ = try? ensureKeyPair()` became an explicit do/catch that propagates; on key errors it disconnects and enters `.error` (fail closed). On the view side, `generateOrGetPublicKey()` was renamed `readPublicKey()` and now goes through `getKeyPair()` (Settings onAppear prefetch, the public key sheet, and three Copy public key spots); transient failures reuse the existing error UI prompting to unlock the device.
+- **Keychain hardening**: Keychain entries now uniformly set `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (the private key shares the write path with passwords/tokens; readable while locked after first unlock, which supports background connections after reboot, and it does not migrate via iCloud Keychain); `KeychainHelper.save/load/delete` all propagate OSStatus, and `loadData` returns nil only on `errSecItemNotFound` (distinguishing "does not exist" from "read failed"); `save` became update-then-add and writes the UserDefaults public key cache only after the private key write verifies.
+- **Rotate hardening (added after review)**: `rotateKey()` no longer deletes before generating; it generates the new key first and overwrites in place with update-then-add `savePrivateKey`, updating the public key cache only after the save succeeds, so a failed save leaves the old identity intact. Errors from the Settings Rotate callback now surface to the user via `publicKeyLoadError` instead of being silently swallowed.
+- **Test isolation**: `SSHKeyManagerTests` is annotated `@Suite(.serialized)` (consistent with `HostProfileTests` in the same file) to avoid flakes from multiple tests concurrently mutating shared Keychain/UserDefaults state.
+- **Verification**: build passes (xcodebuild build with a pinned simulator destination); `SSHKeyManagerTests` targeted run 7/7 pass (2 existing + 5 new: getKeyPair does not mint, bootstrap is idempotent, derivation repairs a stale cache, KeychainHelper update-in-place/delete, hasKeyPair lifecycle); the full 451-test run had 443 pass / 4 fail / 4 skip, with all failures in UI fixture tests (CarMode/AIUsageQuota/SpeechStrategies/ToolCards) that fail identically on a clean baseline, i.e. pre-existing local environment flakes unrelated to this change. Note: running Keychain-related tests on this machine requires removing `CODE_SIGNING_ALLOWED=NO` (an unsigned host app lacks the Keychain entitlement and reports -34018).
 
-### 2026-08-24 — 本地 model shortlist（PR #149，related #99 / #144）
+### 2026-08-24 — Local model shortlist (PR #149, related #99 / #144)
 
-- 官方 picker 的可见性在桌面 persist，`/provider` 与 `/config/providers` 都是完整目录。iOS 在本机做 shortlist：Settings → Models 从已连接 chat-capable catalog 搜索添加，左滑删除，左边手柄排序，点行改 toolbar short name。
-- 聊天栏 Model & Agent 只渲染这份名单、同一顺序。空名单和「到设置里编辑」都会跳到 Settings 并高亮 Models。
-- 已连接的自定义/本地 provider（如 `ollama`）会出现在 catalog 里；不再靠写死 preset 发版。
-- Add Models 页只负责批量加入（Cancel / Add）。删除回 shortlist 左滑。
+- The official picker's visibility persists on desktop, and `/provider` plus `/config/providers` are complete catalogs. iOS keeps a shortlist locally: Settings → Models searches and adds from the connected chat-capable catalog, swipe left to delete, left handle to reorder, tap a row to change the toolbar short name.
+- The chat bar's Model & Agent renders only this list, in the same order. Both an empty list and "edit in Settings" jump to Settings with Models highlighted.
+- Connected custom/local providers (such as `ollama`) appear in the catalog; releases no longer depend on hardcoded presets.
+- The Add Models page only handles bulk adds (Cancel / Add). Deletion stays as swipe-left on the shortlist.
 
-### 2026-08-24 — 确定性 messageID + 行内发送失败横幅（supersedes #89，closes #81）
+### 2026-08-24 — Deterministic messageID + inline send-failure banner (supersedes #89, closes #81)
 
-- **背景**：issue #81 报告 OpenCode 1.15 `prompt_async` 因缺 `messageID` 触发 `SQLITE_CONSTRAINT_NOTNULL` 静默失败。上游已修复（`input.messageID ?? MessageID.ascending()`，实测 1.18.16 接受旧 payload），但两个问题仍在：optimistic 消息双 ID 对账靠文本/时间戳启发式；异步失败（204 后 turn 崩掉）UI 无限等待、零反馈。
-- **cherry-pick PR #89（guyq1997）并适配**：`promptAsync` 带 `messageID` + `directory` query；`createSession` 补 `directory`；`makeServerID(prefix:)` 生成 `msg_<uuid>`。偏离原 PR：砍掉 `partID`——client 不消费 part id，且 `part_` 前缀不符合现 server `PartID` schema（要求 `prt`）。
-- **确定性 ID 对账**：optimistic 行直接用发送给 server 的真实 `msg_` id；`loadMessages` 删除文本归一化/plugin 前缀 hasSuffix/60s 时间窗/`keepPending` busy 门控（~34 行），改为 `MessageStore.pendingOptimisticMessageIDs` 纯 ID 成员对账；server 落库后 pending 自动收敛，失败行保留文本供复制重发。
-- **行内失败横幅（不弹窗）**：同步失败（HTTP 抛错）保留 optimistic 行 + 行内红字横幅，替代旧 `sendError` 弹窗路径；异步失败（SSE `session.error`，此前落入 `default: break` 静默丢弃）命中当前 session 时标记 pending 行失败并 `loadMessages` 对账，reason 取 error.name + 首个非空行（截断 300 字符）。assistant 行级错误仍走既有行内横幅（`errorMessageForDisplay`），互补不重复。
-- **端到端验证**：本地 origin/dev 临时 server 实测——带确定性 messageID 的 payload 落库 id 与 client 一致；无 API key 场景 server 发出 `session.error`（`ProviderAuthError`）且 wire 形状与解码一致。
-- **测试**：新增 8 个（ID 去重/保留、确定性 ID 发送、同步失败横幅、session.error 命中/他 session 过滤/无 pending 行/undecodable 回退）；3 个启发式时代测试改写为 ID 语义；rollback 测试改为"保留行 + 行内失败"语义。
+- **Background**: issue #81 reported that OpenCode 1.15 `prompt_async` failed silently with `SQLITE_CONSTRAINT_NOTNULL` when `messageID` was missing. Upstream fixed that (`input.messageID ?? MessageID.ascending()`; 1.18.16 verified to accept the old payload), but two problems remained: optimistic message reconciliation across the two IDs relied on text/timestamp heuristics, and async failures (the turn dying after the 204) left the UI waiting forever with zero feedback.
+- **Cherry-picked PR #89 (guyq1997) and adapted**: `promptAsync` carries `messageID` + a `directory` query; `createSession` gains `directory`; `makeServerID(prefix:)` generates `msg_<uuid>`. Deviations from the original PR: dropped `partID`, since the client does not consume part ids and the `part_` prefix does not match the current server `PartID` schema (which requires `prt`).
+- **Deterministic ID reconciliation**: the optimistic row uses the real `msg_` id sent to the server; `loadMessages` dropped text normalization / plugin-prefix hasSuffix / the 60s time window / the `keepPending` busy gate (~34 lines) in favor of pure ID membership reconciliation via `MessageStore.pendingOptimisticMessageIDs`; once the server persists, pending converges automatically, and failed rows keep their text for copy-and-resend.
+- **Inline failure banner (no dialog)**: synchronous failures (HTTP throws) keep the optimistic row and add an inline red banner, replacing the old `sendError` dialog path; async failures (SSE `session.error`, previously silently dropped into `default: break`) mark the pending row failed and reconcile via `loadMessages` when they hit the current session, with the reason taken from error.name plus the first non-empty line (truncated to 300 characters). Assistant row-level errors still use the existing inline banner (`errorMessageForDisplay`); the two complement each other without duplicating.
+- **End-to-end verification**: measured against a temporary local origin/dev server: payloads with a deterministic messageID persist under the same id the client used; in the no-API-key scenario the server emits `session.error` (`ProviderAuthError`) and the wire shape matches decoding.
+- **Tests**: 8 new tests (ID dedup/retention, deterministic ID send, synchronous failure banner, session.error hit / other-session filter / no pending row / undecodable fallback); 3 heuristic-era tests rewritten to ID semantics; the rollback test now uses "keep the row + inline failure" semantics.
 
 ### 2026-08-14 — GLM 5.3 + Gemini 3.7 Flash + Grok 4.6 model preset upgrade
 
-- 模型列表顶部 `zai-coding-plan` 的 GLM 从 `GLM-5.2` / `glm-5.2` 升级为 `GLM-5.3` / `glm-5.3`。`models.dev` 上 `zai-coding-plan` 已列出 `glm-5.3`，server 端无需注入。
-- `ollama-cloud` 那行 `Ollama GLM 5.2` 保持不变，因为 `ollama-cloud` 上游暂未提供 `glm-5.3`。
-- `canonicalModelPresetID` 新增 `zai-coding-plan/glm-5.2` 和 `zai-coding-plan/glm-5.3` 均映射到 `zai-coding-plan/glm-5.3`，让之前选中 GLM-5.2 的 session 平滑迁移到新 preset 而非掉回默认。原有的 `glm-5.1` / `glm-5-turbo` 遗留映射一并指向 `glm-5.3`。
-- 同一 PR 顺带把默认模型 `Gemini 3.6 Flash` / `google/gemini-3.6-flash` 升级为 `Gemini 3.7 Flash` / `gemini-3.7-flash`（`models.dev` 已列出）。沿用上次 3.5 → 3.6 的模式，Gemini 不加 canonical 遗留映射，旧 `gemini-3.6-flash` 保存值按默认逻辑保持当前选择。
-- 尾部 `Grok 4.5` / `xai/grok-4.5` 升级为 `Grok 4.6` / `grok-4.6`（`models.dev` 已列出）。`ModelPreset.shortName` 的 `Grok 4.5 -> Grok` 同步改为 `Grok 4.6 -> Grok`，不加 canonical 遗留映射。
-- 移除 `GPT-5.6 Sol Fast` preset（`openai/gpt-5.6-sol-fast`），与 Android 客户端对齐。`canonicalModelPresetID` 将 `openai/gpt-5.6-sol-fast` 映射到 `openai/gpt-5.6-sol`，已选中该模型的 session 平滑迁移；`ModelPreset.shortName` 的 `GPT-F` 分支删除。Car Mode 内部协议使用的 `gpt-5.6-sol-fast`（`CarModeProtocol.model`）与 selector 无关，保持不变。
+- At the top of the model list, the `zai-coding-plan` GLM was upgraded from `GLM-5.2` / `glm-5.2` to `GLM-5.3` / `glm-5.3`. `models.dev` already lists `glm-5.3` for `zai-coding-plan`, so no server-side injection was needed.
+- The `ollama-cloud` row `Ollama GLM 5.2` stays unchanged because the `ollama-cloud` upstream does not offer `glm-5.3` yet.
+- `canonicalModelPresetID` gained entries mapping both `zai-coding-plan/glm-5.2` and `zai-coding-plan/glm-5.3` to `zai-coding-plan/glm-5.3`, so sessions with GLM-5.2 selected migrate smoothly to the new preset instead of falling back to the default. The existing `glm-5.1` / `glm-5-turbo` legacy mappings now point at `glm-5.3` too.
+- The same PR also upgraded the default model `Gemini 3.6 Flash` / `google/gemini-3.6-flash` to `Gemini 3.7 Flash` / `gemini-3.7-flash` (listed on `models.dev`). Following the earlier 3.5 → 3.6 pattern, Gemini gets no canonical legacy mapping; saved `gemini-3.6-flash` values keep the current selection via default logic.
+- The tail `Grok 4.5` / `xai/grok-4.5` preset was upgraded to `Grok 4.6` / `grok-4.6` (listed on `models.dev`). `ModelPreset.shortName`'s `Grok 4.5 -> Grok` changed to `Grok 4.6 -> Grok` in step, with no canonical legacy mapping.
+- Removed the `GPT-5.6 Sol Fast` preset (`openai/gpt-5.6-sol-fast`) to align with the Android client. `canonicalModelPresetID` maps `openai/gpt-5.6-sol-fast` to `openai/gpt-5.6-sol` so sessions with that model selected migrate smoothly; the `GPT-F` branch in `ModelPreset.shortName` was deleted. The `gpt-5.6-sol-fast` used by the Car Mode internal protocol (`CarModeProtocol.model`) is unrelated to the selector and stays unchanged.
 
 ### 2026-07-31 — GPT Live Transcribe host integration
 
@@ -170,177 +170,176 @@
 
 ### 2026-07-30 — Pin VoiceFlowKit 0.3.0
 
-- SPM 依赖从 bare revision 改为 exact SemVer `0.3.0`（`Package.resolved` 对应 merge commit `71b9fe6`）。
-- iPhone 16 simulator build 通过；`SpeechRecognitionDefaultsTests` / `VoiceFlowKitIntegrationTests` / chat speech tests 通过。
+- The SPM dependency changed from a bare revision to exact SemVer `0.3.0` (`Package.resolved` corresponds to merge commit `71b9fe6`).
+- iPhone 16 simulator build passes; `SpeechRecognitionDefaultsTests` / `VoiceFlowKitIntegrationTests` / chat speech tests pass.
 
-### 2026-07-29 — OpenAI Realtime / Grok Batch 双录音策略
+### 2026-07-29 — OpenAI Realtime / Grok Batch dual recording strategies
 
-- VoiceFlowKit pin 初值为 `4a04d562965fe041b552570759ef6e419ab3b2d6`；后续改为 exact `0.3.0`。Settings 持久化 `OpenAI Realtime` / `Grok Batch`，Grok 模式隐藏 OpenAI-only prompt 但保留其值。
-- Chat 与 Car 在 Start 时 snapshot strategy。OpenAI 维持 realtime session、PCM stream、heartbeat 与 recovery；Grok 只启动 AAC-LC M4A 本地录音，录音期不创建 ticket、WebSocket 或 heartbeat，Stop 后单次上传。
-- Chat preserved-audio 与 Car failed-state retry 都保存录音产生时的 strategy；录音后修改 Settings 不会重新解释旧文件。离开活跃录音页面、进入后台或取消 finalization 时会使 in-flight Start/finalization/retry generation 失效，阻止延迟 permission/session/microphone 或 transcript callback 恢复隐藏录音和写回旧结果，并清理临时文件与 realtime session。
-- VoiceFlowKit 同步修复 AAC/WAV finalize error 的 writer、buffer、临时文件与 audio session cleanup；package tests 12 个通过。
-- 验证：iPhone 16 / iOS 18.4 build 通过；新增 strategy persistence/transport contract 与 VoiceFlowKit integration 共 6 个定向测试通过；Tool Cards UI 隔离复跑通过。全量 suite 的 voice 相关测试通过，但仍报告既有 `LayoutConstantsTests.splitViewFractions` 精确 `CGFloat` 比较失败；同轮 Tool Cards fixture 首跑失败、隔离复跑通过。
+- The VoiceFlowKit pin started at `4a04d562965fe041b552570759ef6e419ab3b2d6` and later moved to exact `0.3.0`. Settings persists `OpenAI Realtime` / `Grok Batch`; Grok mode hides the OpenAI-only prompt but keeps its value.
+- Chat and Car snapshot the strategy at Start. OpenAI maintains a realtime session, PCM stream, heartbeat, and recovery; Grok only starts local AAC-LC M4A recording, creating no ticket, WebSocket, or heartbeat while recording, with a single upload after Stop.
+- Both Chat preserved-audio and Car failed-state retry save the strategy from when the recording was produced; changing Settings after recording does not reinterpret old files. Leaving the active recording page, backgrounding, or cancelling finalization invalidates in-flight Start/finalization/retry generations, which prevents delayed permission/session/microphone or transcript callbacks from resuming hidden recordings or writing back stale results, and cleans up temp files and the realtime session.
+- VoiceFlowKit was fixed in step for the AAC/WAV finalize-error writer, buffer, temp file, and audio session cleanup; 12 package tests pass.
+- Verification: iPhone 16 / iOS 18.4 build passes; 6 targeted tests pass across the new strategy persistence/transport contract and VoiceFlowKit integration; Tool Cards UI passes on isolated rerun. Voice-related tests in the full suite pass, but it still reports the pre-existing `LayoutConstantsTests.splitViewFractions` exact `CGFloat` comparison failure; the Tool Cards fixture failed its first run in the same round and passed on isolated rerun.
 
-### 2026-07-24 — Chat 跨 Markdown block 文本选择
+### 2026-07-24 — Chat text selection across Markdown blocks
 
-- 根因定位到 MarkdownUI 的 `BlockSequence`：一条 Markdown 消息会拆成多个 SwiftUI block view；iOS 的 `.textSelection(.enabled)` 只能在单个可选择 view 内工作，无法跨段落、列表和代码块扩展 selection。Chat 没有使用 WKWebView，也不是流式 DOM diff 问题。
-- 保留现有 MarkdownUI 阅读渲染，避免回归 workspace 图片、表格、代码块和链接；user/assistant 消息菜单新增“选择文本”和“复制整条消息”。
-- `Edit from here` 只显示在 user message；`Fork from here` 继续同时支持 user 和 assistant message，允许从任意 turn 分叉。
-- “选择文本”使用单一只读 `UITextView` sheet，逐行清理 Markdown 行内标记，保留段落、列表和代码块的原始换行，再支持 iOS 原生跨行、跨段拖选；“复制整条消息”直接复制完整原始文本。
-- 新增多 text part 拼接测试，确保一条消息的多个文本 part 使用空行连接，不再受 Markdown block 边界影响。
-- 验证：iPhone 16 / iOS 18.4 build 通过；`MessageRenderingHeuristicTests` 7 个定向测试通过。
+- The root cause was pinned to MarkdownUI's `BlockSequence`: one Markdown message splits into multiple SwiftUI block views, and iOS `.textSelection(.enabled)` only works within a single selectable view, so selection cannot extend across paragraphs, lists, and code blocks. Chat does not use WKWebView, and this was not a streaming DOM diff problem either.
+- The existing MarkdownUI reading render is kept to avoid regressing workspace images, tables, code blocks, and links; user/assistant message menus gain "Select text" and "Copy entire message".
+- `Edit from here` shows only on user messages; `Fork from here` continues to support both user and assistant messages, forking from any turn.
+- "Select text" uses a single read-only `UITextView` sheet that strips Markdown inline markers line by line, preserves the original line breaks of paragraphs, lists, and code blocks, and then supports native iOS drag selection across lines and paragraphs; "Copy entire message" copies the full raw text directly.
+- Added a multi-text-part concatenation test ensuring multiple text parts of one message join with blank lines and are no longer affected by Markdown block boundaries.
+- Verification: iPhone 16 / iOS 18.4 build passes; 7 targeted `MessageRenderingHeuristicTests` tests pass.
 
 ### 2026-07-19 — Health Quantification client capability
 
-- Car Mode action 改为 tolerant typed union，保留 Maps，并新增 `health_quantification.export_all`；未知未来 action 不再让整条 structured speech 解码失败。
-- 首次调用显示本地授权 sheet，支持仅这次、以后自动允许和取消；Settings 可撤销 Health export 自动授权。
-- OpenCode 在打开 Health App 前写入 15 分钟 Pending；合法 callback 原子收敛到 6 小时 Outbox。重复、过期、损坏 callback 不产生第二条 continuation。
-- Callback 先本地验收，不依赖 server 连接；continuation 使用记录的 Host、Car context 和 session，以及确定性 message ID + query-before-retry，不读取当前 Chat selection。
-- 正式产品、实现和 wire contract 分别维护在 `docs/features/client_capabilities/prd.md`、`docs/features/client_capabilities/rfc.md` 和 `docs/features/client_capabilities/protocol.md`；canonical agent 入口为 `skills/client_capabilities.md`。
-- 验证覆盖严格 parser、canonical handoff URL、store lifecycle、allow-once、原 session continuation、callback 停止语义和 permission fixture UI。固定 iPhone simulator `302F88CA-C2D3-4DC0-8E12-B3ED82D5A3C8` 的顺序 build 与全量 test 通过；352 个 Swift Testing tests 和 37 个 UI tests 通过，4 个 opt-in UI tests 按预期 skip。
-- 真机 E2E 验收后收敛两处 UX：授权页三个短按钮改为等宽横排，英文最多在按钮内折成两行；callback continuation 进入 Car Mode 原有 `waitingReply`，显示红色“停止响应”主按钮，取消时同时 abort session 并删除对应 Outbox，避免后台已提交但前台看起来无事发生。
+- Car Mode actions became a tolerant typed union, keeping Maps and adding `health_quantification.export_all`; unknown future actions no longer fail the whole structured speech decode.
+- First use shows a local authorization sheet with allow-once, always-allow, and cancel; Settings can revoke the Health export authorization.
+- OpenCode writes a 15-minute Pending before opening the Health App; a legitimate callback atomically converges into the 6-hour Outbox. Duplicate, expired, or corrupted callbacks never produce a second continuation.
+- Callbacks are validated locally first, with no dependency on the server connection; continuations use the recorded Host, Car context, and session, plus deterministic message IDs + query-before-retry, and never read the current Chat selection.
+- The formal product, implementation, and wire contract live in `docs/features/client_capabilities/prd.md`, `docs/features/client_capabilities/rfc.md`, and `docs/features/client_capabilities/protocol.md` respectively; the canonical agent entry point is `skills/client_capabilities.md`.
+- Verification covers the strict parser, the canonical handoff URL, store lifecycle, allow-once, original-session continuation, callback stop semantics, and the permission fixture UI. Sequential build and full test pass on the pinned iPhone simulator `302F88CA-C2D3-4DC0-8E12-B3ED82D5A3C8`; 352 Swift Testing tests and 37 UI tests pass, with 4 opt-in UI tests skipped as expected.
+- After on-device E2E acceptance, two UX points were tightened: the authorization page's three short buttons became equal-width in a row, wrapping English to at most two lines inside a button; a callback continuation enters Car Mode's existing `waitingReply` with a red "stop responding" primary button, and cancelling both aborts the session and deletes the matching Outbox, avoiding a background-committed request that looks like nothing happened in the foreground.
 
-### 2026-07-15 — Session deep link 与 Agent 搜索链接
+### 2026-07-15 — Session deep link and Agent search links
 
-- 注册 `opencode://session/<session_id>`，使用严格 URI parser 拒绝未知 host、query、fragment、userinfo、port、非法 ID 和多层 path。
-- cold/warm URL 与 Chat Markdown 点击共用 AppState router；连接恢复后用当前 Host 的 `GET /session/:id` 验证，成功后切换 project/session，失败保留原上下文。
-- 后台和 Host 切换会使旧 resolve generation 失效，避免 SSH 重连前丢链接或旧 Host 响应污染新 Host。
-- session list 刷新会保留当前已验证 session，避免历史目标落在 100 条窗口外后被覆盖；Files tree 使用目标 project directory 重新加载。
-- 新增 parser/state tests、Markdown tap fixture 和 cold pending fixture；同时固定 UI suites 的 portrait 前置条件，消除 launch tests 遗留方向导致的跨测试污染。
-- 产品行为和技术 contract 已分别并入主 PRD §4.2.7 与 RFC §4.4。Workspace private semantic-search overlay 已规定候选证据与 `[在 OpenCode 中打开](opencode://session/<id>)` 输出 contract。
+- Registered `opencode://session/<session_id>` with a strict URI parser that rejects unknown hosts, query, fragment, userinfo, port, invalid IDs, and multi-segment paths.
+- Cold/warm URLs share the AppState router with Chat Markdown taps; after the connection recovers the URL is verified against the current Host via `GET /session/:id`, switching project/session on success and keeping the original context on failure.
+- Backgrounding and Host switches invalidate old resolve generations, preventing lost links before an SSH reconnect or a stale Host response polluting the new Host.
+- Session list refreshes keep the currently verified session so a historical target outside the 100-entry window is not overwritten; the Files tree reloads using the target project directory.
+- Added parser/state tests, a Markdown tap fixture, and a cold pending fixture; also pinned the portrait precondition of UI suites to remove cross-test pollution from orientations left behind by launch tests.
+- Product behavior and the technical contract were merged into main PRD §4.2.7 and RFC §4.4 respectively. The workspace private semantic-search overlay now specifies the candidate evidence and `[Open in OpenCode](opencode://session/<id>)` output contract.
 
-### 2026-07-15 — Car session active 恢复与文档收敛
+### 2026-07-15 — Car session active restore and doc consolidation
 
-- 每个 Car turn 发送前检查持久化 session；若 `time.archived > 0`，客户端写入 legacy restore sentinel `-1` 后继续使用原 session。该行为不 fork、不复制历史，也不要求 archive-list server patch。
-- iOS 按 `archived > 0` 区分 Active / Archived，因此恢复后重新出现在 iOS Active 列表。OpenCode Web 只接受 `archived === undefined` 的差异不纳入本功能保证。
-- Car Mode 产品需求并入 `OpenCode_iOS_Client_PRD.md`，技术 contract 与验证证据并入 `OpenCode_iOS_Client_RFC.md`；删除独立 `car_mode_design.md`，避免三份文档漂移。
+- Before sending each Car turn the client checks the persisted session; if `time.archived > 0`, it writes the legacy restore sentinel `-1` and keeps using the original session. This behavior does not fork, does not copy history, and requires no archive-list server patch.
+- iOS distinguishes Active / Archived by `archived > 0`, so a restored session reappears in the iOS Active list. The OpenCode Web difference (it only accepts `archived === undefined`) is not covered by this feature's guarantee.
+- Car Mode product requirements merged into `OpenCode_iOS_Client_PRD.md`, with the technical contract and verification evidence merged into `OpenCode_iOS_Client_RFC.md`; the standalone `car_mode_design.md` was deleted to keep three documents from drifting apart.
 
-### 2026-07-14 — Car Mode 实现与 server history 修复
+### 2026-07-14 — Car Mode implementation and server history fix
 
-- Settings 新增 Experimental Features section，集中放置 AI Usage Dashboard 配置和 Car Mode 开关。Car Mode 默认关闭；开启后的 iPhone Tab 顺序为 Chat / Files / Car / Settings，关闭时不显示 Car Tab。iPad（包括 compact 窗口）和 Apple Vision Pro 不显示 Car Mode 或开关。
-- Car session 按 host UUID + workspace 隔离，不复用普通 Chat 的 `currentSessionID`；持久化 session ID、最后处理的 assistant message ID 和 pending confirmation。
-- 新增同步 structured prompt API，固定 `openai/gpt-5.6-sol-fast` + `build`；客户端只消费 schema 验证后的 `assistant.structured`。
-- Apple TTS 显式使用 `.playback` + `.spokenAudio`，发送前关闭录音 audio session，修复 UI 显示朗读但声音可能留在 receiver/Bluetooth HFP route 的问题。
-- 客户端 action allowlist 仅含 `open_navigation`，由 iOS 校验 typed destination/waypoints 后构造 Apple Maps URL。
-- 普通 Chat 在 structured assistant 没有 text part 时显示 `assistant.structured.speech`，并新增 UI fixture 验证 Car history 可见。
-- nested server commit `43a4a0e53` 修复 structured user message 的 `info.format` wire schema；schema/opencode 定向测试和 typecheck 通过。
-- live 4096 已验证可读取目标 Car session 的完整 structured history；14 条消息和 3 条 structured assistant 均保留。
-- 验证：固定 iPhone simulator `302F88CA-C2D3-4DC0-8E12-B3ED82D5A3C8`，`-parallel-testing-enabled NO`；327 unit tests、三个 iPhone Car UI tests、一个 iPad 隐藏测试和 visionOS simulator build 均通过。iPad 测试同时确认 Car 页面和 Settings 开关均不存在。
-- 真机已确认 TTS 正常出声，live structured Car history 已可读取。Smart Home、邮件、iMessage、route-duration skills 仍未产品化或完成真实 E2E。
+- Settings gained an Experimental Features section holding the AI Usage Dashboard configuration and the Car Mode toggle. Car Mode defaults to off; when on, the iPhone tab order is Chat / Files / Car / Settings, and the Car tab is hidden when off. iPad (including compact windows) and Apple Vision Pro show neither Car Mode nor the toggle.
+- Car sessions are isolated by host UUID + workspace and do not reuse normal Chat's `currentSessionID`; persisted state covers session ID, the last processed assistant message ID, and pending confirmation.
+- Added a synchronous structured prompt API pinned to `openai/gpt-5.6-sol-fast` + `build`; the client consumes only schema-validated `assistant.structured`.
+- Apple TTS now explicitly uses `.playback` + `.spokenAudio` and closes the recording audio session before speaking, fixing the case where the UI showed speech while audio could remain on the receiver/Bluetooth HFP route.
+- The client action allowlist contains only `open_navigation`; iOS validates the typed destination/waypoints and then constructs the Apple Maps URL.
+- Normal Chat shows `assistant.structured.speech` when a structured assistant message has no text part, with a new UI fixture verifying Car history visibility.
+- Nested server commit `43a4a0e53` fixes the `info.format` wire schema for structured user messages; targeted schema/opencode tests and typecheck pass.
+- The live 4096 server was verified to read the target Car session's full structured history; 14 messages and 3 structured assistant entries all survive.
+- Verification: pinned iPhone simulator `302F88CA-C2D3-4DC0-8E12-B3ED82D5A3C8` with `-parallel-testing-enabled NO`; 327 unit tests, three iPhone Car UI tests, one iPad absence test, and the visionOS simulator build all pass. The iPad test also confirms both the Car page and the Settings toggle are absent.
+- On device, TTS was confirmed audible and live structured Car history is readable. The Smart Home, email, iMessage, and route-duration skills remain unproductized without real E2E.
 
-### 2026-07-13 — Car Mode feasibility 与设计
+### 2026-07-13 — Car Mode feasibility and design
 
-- 完成 Car Mode feasibility 设计，将驾驶语音入口收敛为 OpenCode iOS 内的独立模式；结论现已归入主 PRD/RFC。
-- live OpenCode API 已验证：`system + format(json_schema)` 能返回 `assistant.structured`；同一 session 第二轮可复用上一轮目的地；tool 执行后仍可返回 structured final。
-- 发现 production blocker：structured user message 持久化 `format` 后，message list endpoint 会在 `info.format` 输出校验时报 `OutputFormatJsonSchema` BadRequest。同步 `/message` 可做 UI/TTS spike，但历史恢复、Chat 查看和异步 exactly-once 处理前必须修复 server schema。
-- live `skill` tool 当前未注册 workspace 的 Smart Home、邮件、iMessage 和地图 skills；产品化需正式注册 Car allowlist 或改为 typed tools，不能把通用 `read + bash` 当稳定权限边界。
-- 产品边界：切到 Maps 或其他 App 后不承诺后台持续交互，但保留按 host/workspace 隔离的 Car session ID；切回后继续 append 同一个 session。
+- Completed the Car Mode feasibility design, converging the driving voice entry into a standalone mode inside OpenCode iOS; conclusions are now folded into the main PRD/RFC.
+- Verified against the live OpenCode API: `system + format(json_schema)` can return `assistant.structured`; a second turn in the same session can reuse the previous turn's destination; a structured final can still be returned after tool execution.
+- Found a production blocker: once a structured user message persists `format`, the message list endpoint raises an `OutputFormatJsonSchema` BadRequest validating `info.format` on output. The synchronous `/message` path is enough for a UI/TTS spike, but the server schema must be fixed before history restore, Chat viewing, and async exactly-once handling.
+- The live `skill` tool does not currently have the workspace's Smart Home, email, iMessage, and maps skills registered; productization needs a formally registered Car allowlist or typed tools, since generic `read + bash` cannot serve as a stable permission boundary.
+- Product boundary: no promise of continued background interaction after switching to Maps or another app, but the host/workspace-isolated Car session ID is kept, and returning appends to the same session.
 
 ### 2026-06-18 — Image attachments Phase 1/2
 
-- 范围按本轮决策收敛为前两阶段：发送相册图片 + 渲染历史 image/file part；不做 Files app、PDF/text 附件或 server-side upload。
-- 协议：`Part` 增加 `mime` / `filename` / `url` / `source`；`APIClient.promptAsync` 支持 mixed text/file parts，图片使用 Web 同构的 `data:image/jpeg;base64,...`。
-- Composer：新增 `PhotosPicker` 附件按钮和横向缩略图 strip；选择图片后本地转 JPEG，最长边 2048、quality 0.82、单图压缩后 5MB 上限；发送失败会恢复文本和附件。
-- Optimistic UI：`appendOptimisticUserMessage` 可生成 text + file parts，用户发送后立即看到图片附件。
-- 渲染：`MessageRowView` 对 user/assistant 的 `type == "file"` 都有显示路径；image part 显示缩略图并可点开 `ImageView` zoom/pan，非图片显示 fallback file card。
-- 测试：新增 `filePartDecoding`、`appendOptimisticUserMessageIncludesImageAttachmentPart`、`sendMessagePassesImageAttachmentsToAPI`。
-- 验证：`xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4'` 通过。
+- Scope converged per this round's decision to the first two phases: sending photo-library images + rendering historical image/file parts; no Files app integration, no PDF/text attachments, no server-side upload.
+- Protocol: `Part` gains `mime` / `filename` / `url` / `source`; `APIClient.promptAsync` supports mixed text/file parts, with images using the web-isomorphic `data:image/jpeg;base64,...`.
+- Composer: added a `PhotosPicker` attachment button and a horizontal thumbnail strip; selected images are converted to JPEG locally, longest edge 2048, quality 0.82, 5MB cap per compressed image; on send failure the text and attachments are restored.
+- Optimistic UI: `appendOptimisticUserMessage` can produce text + file parts, so the user sees image attachments immediately after sending.
+- Rendering: `MessageRowView` has display paths for `type == "file"` on both user/assistant; image parts show a thumbnail that opens `ImageView` zoom/pan on tap, and non-images show a fallback file card.
+- Tests: added `filePartDecoding`, `appendOptimisticUserMessageIncludesImageAttachmentPart`, `sendMessagePassesImageAttachmentsToAPI`.
+- Verification: `xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4'` passes.
 
 ### 2026-06-18 — Message revert / Edit from here MVP
 
-- 目标收敛为最小可用版：只做 user message 的 `Edit from here`，不做 restore dock、`unrevert` UI 或 part-level revert。
-- 数据协议：`Session` 增加 `revert` 解码；`APIClient` 新增 `POST /session/:id/revert`，按当前 server 返回 `Session` 处理。
-- UI：user message 的 `⋯` 菜单新增 `Edit from here`；busy session 下禁用，避免 server busy 状态下 revert 失败。
-- 状态流：点击后调用 `AppState.editFromMessage`，成功后把原 user text parts 写回 composer draft，upsert returned session，并刷新 messages / diff / file status。
-- 渲染语义：`ChatTabView` 使用 `AppState.visibleMessages`，当 `currentSession.revert.messageID` 存在时隐藏 `message.id >= revert.messageID` 的历史行，与 Web 的 rewind 视图保持一致。
-- 测试：新增 `sessionDecodingWithRevert`、`visibleMessagesHidesRowsAtAndAfterRevertMessageID`、`editFromMessageCallsRevertAndStoresDraft`、`editFromMessageKeepsDraftUnchangedOnFailure`。
-- 验证：`xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4'` 通过。
+- The goal converged to a minimal viable version: only user-message `Edit from here`, no restore dock, no `unrevert` UI, no part-level revert.
+- Data protocol: `Session` gains `revert` decoding; `APIClient` adds `POST /session/:id/revert`, handling the `Session` the current server returns.
+- UI: the user message `⋯` menu gains `Edit from here`, disabled for a busy session to avoid revert failing while the server is busy.
+- State flow: tapping calls `AppState.editFromMessage`; on success the original user text parts are written back to the composer draft, the returned session is upserted, and messages / diff / file status refresh.
+- Rendering semantics: `ChatTabView` uses `AppState.visibleMessages`, hiding history rows with `message.id >= revert.messageID` when `currentSession.revert.messageID` exists, matching the Web rewind view.
+- Tests: added `sessionDecodingWithRevert`, `visibleMessagesHidesRowsAtAndAfterRevertMessageID`, `editFromMessageCallsRevertAndStoresDraft`, `editFromMessageKeepsDraftUnchangedOnFailure`.
+- Verification: `xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4'` passes.
 
-### 2026-06-14 — Markdown Web Preview 真机验收与收口
+### 2026-06-14 — Markdown Web Preview device acceptance and closeout
 
-- **Phase 0/1/2 全部完成并上线**（详见前面的 Markdown Web Preview 段落）；`xcodebuild test` 全量串行通过（291 + 11 新增 = 302 passed，无回归）。
-- **默认预览模式改为 Web**（PRD §5.1 / RFC §8.2 同步更新）。
-- **真机 dark 模式验收暴露的 chip 对比度问题**：`<style>` 卡片用硬编码浅色背景在 dark 下糊掉；shell 给 dark 语义变量改用饱和主色（`--ok-bg=#10b981` 等，像 GitHub 暗色 issue label）；chip 用复合选择器 `.vx-chip.ok` 而非裸 `.ok` 避免被卡片 `color:var(--fg)` 覆盖。
-- **切文件 WebView 残留旧内容**：根因 SwiftUI 复用同一 `FileContentView` 实例时 `.onAppear` 只触发一次；修法是 `.onChange(of: filePath)` 主动 reset content + reload（试过 `.id(filePath)` 但代价是整个 view 重建，不优雅，已 revert）。
-- **新增回归测试**：`semantic_chips.md` fixture + `testSemanticChipsDarkVisible / Light` UI 测试，sentinel 文本断言守护"dark chip 糊掉"和"裸 `.ok` 被覆盖"两个真实 bug。
-- **internal-writing skill 大幅升级**：
-  - "CSS 颜色用主题变量 + fallback"（替代之前模糊的"主题安全"）
-  - "语义类必须用复合选择器"（dogfood 抓到的特异性坑）
-  - "**真正指标是新概念引入速率而非字数**"（low cognitive burden 的根本框架）
-  - "状态卡当百科条目写"被列为反模式，明确卡片/表格/`<details>` 的边界
-- **文档合并**：`Markdown_Web_Preview_PRD.md` / `Markdown_Web_Preview_RFC.md` 的最终决策状态合并进主 PRD §4.3.5 / 主 RFC §7.5（用 visual 表格 + `<details>` 形式，本身就是 dogfood）。两份子文档保留在磁盘但 `git rm --cached` 移除跟踪并加进 `.gitignore`，决策过程在此 WORKING.md（归档落位时间见 2026-09-13 条目）。
+- **Phase 0/1/2 fully complete and shipped** (see the earlier Markdown Web Preview section); `xcodebuild test` passes in full serial run (291 + 11 new = 302 passed, no regressions).
+- **The default preview mode became Web** (PRD §5.1 / RFC §8.2 updated in step).
+- **Chip contrast problems exposed by device dark-mode acceptance**: `<style>` cards with hardcoded light backgrounds washed out in dark mode; the shell's dark semantic variables switched to saturated primary colors (`--ok-bg=#10b981` etc., like GitHub dark issue labels); chips use the compound selector `.vx-chip.ok` instead of bare `.ok` to avoid being overridden by the card's `color:var(--fg)`.
+- **Stale WebView content when switching files**: the root cause is that `.onAppear` fires only once when SwiftUI reuses the same `FileContentView` instance; the fix is `.onChange(of: filePath)` actively resetting content + reloading (`.id(filePath)` was tried but rebuilds the entire view, inelegant, and was reverted).
+- **New regression tests**: the `semantic_chips.md` fixture + `testSemanticChipsDarkVisible / Light` UI tests, whose sentinel text assertions guard the two real bugs "dark chips wash out" and "bare `.ok` gets overridden".
+- **Major internal-writing skill upgrade**:
+  - "CSS colors use theme variables + fallback" (replacing the vaguer "theme safe")
+  - "Semantic classes must use compound selectors" (specificity pitfall caught by dogfooding)
+  - "**The real metric is the rate of introducing new concepts, not the word count**" (the fundamental framing of low cognitive burden)
+  - "Writing status cards like encyclopedia entries" is now listed as an anti-pattern, with the boundaries of cards/tables/`<details>` clarified
+- **Doc merge**: the final decision states of `Markdown_Web_Preview_PRD.md` / `Markdown_Web_Preview_RFC.md` merged into main PRD §4.3.5 / main RFC §7.5 (as visual tables + `<details>`, itself dogfooding). The two sub-documents stay on disk but were untracked with `git rm --cached` and added to `.gitignore`; the decision history is in this WORKING.md (for the archive placement date see the 2026-09-13 entry).
 
 ### 2026-06-20 — Ollama Cloud GLM 5.2 model preset
 
-- 模型列表中将 `Ollama Kimi K2.6`（`ollama-cloud/kimi-k2.6`）替换为 `Ollama GLM 5.2`（`ollama-cloud/glm-5.2`）。OpenCode server 的 `ollama-cloud` provider registry 已通过 `scripts/regen_models_local.py` 的 `INJECTIONS` 注入 `glm-5.2` 条目（见 `opencode-official/skills/update_models.md`），model key 是 `glm-5.2`。
-- `ModelPreset.shortName` 从 `Ollama Kimi K2.6 -> Kimi` 改为 `Ollama GLM 5.2 -> OGLM-5.2`（加 O 前缀和版本号，与顶部 `GLM-5.2` preset 的 shortName 区分），保持窄屏 model chip 简短。
-- `canonicalModelPresetID` 新增 `ollama-cloud/kimi-k2.6 -> ollama-cloud/glm-5.2`，让之前选中 Kimi 的 session 平滑迁移到新 preset 而非掉回默认。
+- In the model list, `Ollama Kimi K2.6` (`ollama-cloud/kimi-k2.6`) is replaced by `Ollama GLM 5.2` (`ollama-cloud/glm-5.2`). The OpenCode server's `ollama-cloud` provider registry had a `glm-5.2` entry injected via the `INJECTIONS` in `scripts/regen_models_local.py` (see `opencode-official/skills/update_models.md`); the model key is `glm-5.2`.
+- `ModelPreset.shortName` changed from `Ollama Kimi K2.6 -> Kimi` to `Ollama GLM 5.2 -> OGLM-5.2` (the O prefix plus version distinguishes it from the top `GLM-5.2` preset's shortName), keeping the narrow-screen model chip short.
+- `canonicalModelPresetID` gained `ollama-cloud/kimi-k2.6 -> ollama-cloud/glm-5.2` so sessions that had Kimi selected migrate smoothly to the new preset instead of falling back to the default.
 
 ### 2026-06-10 — Ollama Cloud Kimi model preset
 
-- 模型列表中将 `MiniMax M3`（`ollama-cloud/minimax-m3`）替换为 `Ollama Kimi K2.6`（`ollama-cloud/kimi-k2.6`）。OpenCode server 的 `ollama-cloud` provider registry 暴露的 model key 是 `kimi-k2.6`；直接传 Ollama library tag `kimi-k2.6:cloud` 会让 `prompt_async` 返回 204 但后台不生成 assistant message。
-- `ModelPreset.shortName` 新增 `Ollama Kimi K2.6 -> Kimi`，保持窄屏 model chip 简短。
+- In the model list, `MiniMax M3` (`ollama-cloud/minimax-m3`) is replaced by `Ollama Kimi K2.6` (`ollama-cloud/kimi-k2.6`). The model key exposed by the OpenCode server's `ollama-cloud` provider registry is `kimi-k2.6`; passing the Ollama library tag `kimi-k2.6:cloud` directly makes `prompt_async` return 204 while no assistant message is generated in the background.
+- `ModelPreset.shortName` gained `Ollama Kimi K2.6 -> Kimi`, keeping the narrow-screen model chip short.
 
 ### 2026-06-08 — F3 voice rail composer
 
-- Chat composer 从“输入框内附属麦克风”收敛为 `voice rail + text review field`：voice rail 承载录音 transport、真实 waveform、转写等待、stop-wait、preserved-audio retry；文本框承载转写审阅、修正、fallback 打字和固定 send。
-- agent running 降为 composer 附近的 quiet status row，`Interrupt agent` 放入 `⋯` 菜单，避免低频破坏性动作抢过语音 steer 主路径。
-- 录音中 waveform 使用 `VoiceFlowMicrophone.audioLevel` 的真实 mic level；每次开始新录音前重建 `VoiceFlowMicrophone`，避免第二次录音后 audioLevel stream 不再产出。
-- 转写等待保留主动出口 `Stop transcription wait`，调用 abort-preserving-audio；preserved-audio 状态下左侧图标按钮负责 `Retry this segment`，右侧轻量动作负责 `Discard audio`，避免两个 retry 入口并给 retry 失败后的状态一个明确出口。
-- 语音转写和 preserved-audio retry 的 partial transcript 写入 text review field 时自动滚到末尾，让用户能持续看到最新转写文字；普通手动输入和草稿恢复不强制滚动。
-- 新增 `UITEST_F3_TRANSCRIBING_FIXTURE` / `UITEST_F3_RETRY_FIXTURE` 与对应 UI tests，覆盖 transcribing + agent running、preserved-audio retry 两个关键状态。
+- The Chat composer converged from "a microphone attached inside the input field" to `voice rail + text review field`: the voice rail carries recording transport, the real waveform, transcription waiting, stop-wait, and preserved-audio retry; the text field carries transcript review, corrections, fallback typing, and a fixed send.
+- Agent running was demoted to a quiet status row near the composer, and `Interrupt agent` moved into the `⋯` menu, keeping low-frequency destructive actions out of the main voice-steer path.
+- While recording, the waveform uses the real mic level from `VoiceFlowMicrophone.audioLevel`; `VoiceFlowMicrophone` is rebuilt before each new recording so the audioLevel stream does not stop producing after the second recording.
+- Transcription waiting keeps an explicit exit, `Stop transcription wait`, which calls abort-preserving-audio; in the preserved-audio state the left icon button handles `Retry this segment` and the right lightweight action handles `Discard audio`, avoiding two retry entrances and giving the post-retry-failure state a clear exit.
+- When a partial transcript from speech transcription or a preserved-audio retry is written into the text review field, it auto-scrolls to the end so the user can keep seeing the latest transcription; ordinary manual input and draft restoration do not force scrolling.
+- Added `UITEST_F3_TRANSCRIBING_FIXTURE` / `UITEST_F3_RETRY_FIXTURE` with matching UI tests covering the two key states: transcribing + agent running, and preserved-audio retry.
 
 ### 2026-06-08 — Chat history load-more diagnostics
 
-- 对照 Android 后修复 iOS message part `files` 解码兼容性：旧历史中可能出现 `files: ["path"]` 或缺少 `additions/deletions` 的对象，Android 已兼容，iOS 之前要求完整对象，扩大 message limit 后可能静默丢掉旧记录。
-- `loadMessages` / `loadOlderMessagesForCurrentSession` 增加 limit、返回条数、是否增加历史和 fallback decoder dropped record 日志，便于复现“下拉结束但历史没增加”的问题。
-- 新增回归测试覆盖 `files` 字符串形态，以及 load older 从 20 扩到 40 后应用更大 message window。
-- 进一步从真机日志确认：chat history limit 已从 20 扩到 40/60，但 message 请求被取消；同时 session list 的底部 `onAppear` 自动分页在 archived-heavy 数据下从 6500 连续加载到 8000。将 session list 的自动 sentinel 改为显式“Load more sessions”按钮，避免折叠 archived 区域触发无限分页并抢占 chat history 请求。
-- 第二轮日志确认 session 自动分页已停止，但 SSE `session.updated` 仍高频重复替换同一 busy session，并伴随 SwiftUI “Modifying state during view update” warning。`Session` / `SessionStatus` 改为 `Equatable`，跳过 no-op upsert/status writes；`loadOlderMessagesForCurrentSession` 将实际 `loadMessages()` 放进 unstructured main-actor task，避免 `.refreshable` 取消直接取消历史消息网络请求。
-- 第三轮真机日志验证：`requestedLimit=40/60` 后分别返回 `returned=40/60`，历史消息数量从 20 增加到 40/60。补充 regression test 覆盖 identical `session.updated` payload 不触发 session list 变更。
+- After comparing with Android, fixed iOS message part `files` decoding compatibility: old history can contain `files: ["path"]` or objects missing `additions/deletions`; Android already tolerated these, iOS previously required the full object, and after raising the message limit it could silently drop old records.
+- `loadMessages` / `loadOlderMessagesForCurrentSession` gained logging for limit, returned count, whether history grew, and fallback decoder dropped records, making it easier to reproduce "pull to load older finished but history did not grow".
+- Device logs further confirmed: the chat history limit was already raised from 20 to 40/60, but the message request was being cancelled; meanwhile the session list's bottom `onAppear` auto-pagination loaded continuously from 6500 to 8000 on archived-heavy data. The session list's automatic sentinel became an explicit "Load more sessions" button, preventing the collapsed archived region from triggering endless pagination and starving chat history requests.
+- A second log round confirmed session auto-pagination had stopped, but SSE `session.updated` still repeatedly replaced the same busy session at high frequency, along with the SwiftUI "Modifying state during view update" warning. `Session` / `SessionStatus` became `Equatable` to skip no-op upserts/status writes; `loadOlderMessagesForCurrentSession` moved the actual `loadMessages()` into an unstructured main-actor task so `.refreshable` cancellation no longer directly cancels the history message network request.
+- A third on-device log round verified: with `requestedLimit=40/60` the responses returned `returned=40/60` respectively, and history message count rose from 20 to 40/60. Added a regression test covering identical `session.updated` payloads not triggering session list changes.
 
 ### 2026-05-30 — Speech abort/retry
 
-- VoiceFlowKit pin 更新到 merged revision `dbbe297ea52e3a3438d227a54001b23c138c47b7`。
-- Chat composer 左侧新增辅助按钮：录音/转写中显示 stop，调用 `abortPreservingAudio()` 立即释放 UI；保留音频后显示 retry，调用 `transcribe(preservedAudio:)` 重识别上一段 PCM。
-- `cancel()` 语义保持不变，只有显式 abort 路径保留音频；发送按钮仍通过 `isRecording/isTranscribing/isRetryingSpeech` 门控避免并发写入 input。
+- The VoiceFlowKit pin updated to merged revision `dbbe297ea52e3a3438d227a54001b23c138c47b7`.
+- The Chat composer gained an auxiliary button on the left: during recording/transcription it shows stop, calling `abortPreservingAudio()` to release the UI immediately; once audio is preserved it shows retry, calling `transcribe(preservedAudio:)` to re-transcribe the previous PCM segment.
+- `cancel()` semantics are unchanged; only the explicit abort path preserves audio. The send button is still gated by `isRecording/isTranscribing/isRetryingSpeech` to avoid concurrent writes to input.
 
-## 默认工作流约定
+## Default Workflow Conventions
 
-### "用最新的 code 编译" 的默认语义
+### Default meaning of "build with the latest code"
 
-在这个项目里，这句话默认**不是**指直接拿远端最新代码原地编译。
+In this project, that phrase by default does **not** mean compiling the latest remote code in place directly.
 
-默认含义是：
+The default meaning is:
 
-1. 进入 `adhoc_jobs/opencode_ios_client/opencode-official`
-2. `fetch origin`，获取最新 `origin/dev`
-3. 在**保留当前本地提交**的前提下，把当前本地集成分支 rebase 到最新 `origin/dev` 之上
-4. 用 rebase 后的 server 代码继续编译、测试、部署 iOS client / server 联调环境
+1. Enter `adhoc_jobs/opencode_ios_client/opencode-official`
+2. `fetch origin` to get the latest `origin/dev`
+3. Rebase the current local integration branch onto the latest `origin/dev` while **keeping the current local commits**
+4. Build, test, and deploy the iOS client / server integration environment from the rebased server code
 
-这条约定的目标是固定一种工作语义：**最新代码 = 最新上游 `origin/dev` + 当前本地补丁栈**。
+The convention exists to pin down one working semantic: **latest code = latest upstream `origin/dev` + the current local patch stack**.
 
-这里的“本地提交”专指：当前分支上**已经提交**、但还没有集成到最新 `origin/dev` 之上的那些提交；**不包含** working tree 里的未提交改动。
+"Local commits" here refers strictly to commits **already committed** on the current branch that have not yet been integrated on top of the latest `origin/dev`; **it excludes** uncommitted changes in the working tree.
 
-只有当需求明确说明“不要本地提交，只编译纯上游最新代码”时，才跳过 rebase，直接基于干净的 `origin/dev` 工作。
+Only when the request explicitly says "no local commits, build pure upstream latest code" does the rebase get skipped and work proceed directly from a clean `origin/dev`.
 
-### 为什么这样约定
+### Why this convention
 
-- `opencode-official` 当前可验证的主线是 `dev` / `origin/dev`，不是 `master`
-- 本地通常会有一组尚未上游化的 patch；直接编译纯上游会丢掉这些行为差异
-- 先 rebase 再编译，能更早暴露上游变更与本地 patch 的冲突，而不是把问题留到更后面
+- The currently verifiable mainline of `opencode-official` is `dev` / `origin/dev`, not `master`
+- Local usually carries a set of not-yet-upstreamed patches; building pure upstream directly would drop those behavior differences
+- Rebasing before building surfaces conflicts between upstream changes and local patches earlier instead of leaving the problem for later
 
-### 执行边界
+### Execution boundaries
 
-- 这是一个**保留本地提交**的集成工作流，不是“强制重置到远端”
-- 如果 rebase 出现冲突或失败，默认先暂停并确认处理方式，不继续进入编译/部署阶段
-- 如果只是做只读调研、API 对照或回归定位，不默认触发这条工作流
+- This is an integration workflow that **preserves local commits**, not a "hard reset to the remote"
+- If the rebase hits conflicts or fails, pause by default and confirm how to proceed before entering the build/deploy stage
+- Read-only research, API comparison, or regression triage does not trigger this workflow by default
 
 ### Success criteria
 
-- 成功标准不只是“编译产出了 binary”，还包括**运行路径正确**
-- 在 `knowledge_working` 下启动 OpenCode 时，所执行的必须是这次 workflow 产出的最新 binary，而不是之前遗留在磁盘上的旧 binary
-- 对当前工作流来说，只有当下面这类命令实际启动的是刚刚 rebase + build 得到的 binary，才算完成闭环验证：
+- The success criteria are more than "the build produced a binary"; the **executed path must be correct** too
+- When OpenCode starts under `knowledge_working`, the binary being executed must be the latest one produced by this workflow, not an older binary left over on disk
+- For this workflow, closed-loop verification completes only when a command like the one below actually launches the binary just obtained from rebase + build:
 
 ```bash
 OPENCODE_DB_PATH="$HOME/.local/share/opencode/opencode.db" \
@@ -348,532 +347,532 @@ OPENCODE_SERVER_PASSWORD="restart_Web@" \
 /Users/grapeot/co/knowledge_working/adhoc_jobs/opencode_ios_client/opencode-official/packages/opencode/dist/opencode-darwin-arm64/bin/opencode web --hostname 0.0.0.0
 ```
 
-- 如果该命令仍然指向旧构建产物，或无法证明它对应的是本轮 rebase 后的新 binary，则这次“用最新的 code 编译”不能算完成
+- If that command still points at old build output, or it cannot be proven to correspond to the new binary from this round's rebase, then this "build with the latest code" run does not count as complete
 
-### 运行验证边界
+### Runtime verification boundaries
 
-- 如果用户当前正在活跃使用 OpenCode，尤其已经有一个 `4096` 端口上的 server 在服务中，**不要**为了验证新 binary 去 kill、restart、或接管这个 live process
-- 这种场景下，默认跳过会干扰现有使用的 runtime 验证步骤
-- 如果仍然需要运行时验证，应使用单独的临时进程/临时端口完成，并且只管理自己新启动的那条验证进程，不触碰用户现有的 `4096` 进程
+- If the user is actively using OpenCode right now, especially with a server already serving on port `4096`, do **not** kill, restart, or take over that live process to verify a new binary
+- In that scenario, runtime verification steps that would disturb current usage are skipped by default
+- If runtime verification is still needed, do it with a separate temporary process/port, managing only the verification process you started and never touching the user's existing `4096` process
 
-## 进行中
+## In Progress
 
-无。Markdown Web Preview Phase 0/1/2 已交付，记录见下方「已完成」。
+None. Markdown Web Preview Phase 0/1/2 has been delivered; see "Completed" below for the records.
 
-### Markdown Web Preview（2026-06-14 启动，已交付）
+### Markdown Web Preview (started 2026-06-14, delivered)
 
-> 设计见 `docs/archive/2026-06_markdown_web_preview_prd.md` / `docs/archive/2026-06_markdown_web_preview_rfc.md`。本轮交付 Phase 0/1/2。
-> 决策：图片走 data URI 复用 `MarkdownImageResolver`；Web 非默认模式；编排见 RFC §12.5。
-> 编译/测试约束：`xcodebuild build` 与 `xcodebuild test` 必须串行（共享 `build.db`）。
-> 关键文件：`OpenCodeClient/OpenCodeClient/Views/FileContentView.swift`（mode 切换）、`Utils/MarkdownImageResolver.swift`（data URI 复用）。
+> Design in `docs/archive/2026-06_markdown_web_preview_prd.md` / `docs/archive/2026-06_markdown_web_preview_rfc.md`. This round delivered Phase 0/1/2.
+> Decisions: images go through data URIs reusing `MarkdownImageResolver`; Web is not the default mode; orchestration in RFC §12.5.
+> Build/test constraint: `xcodebuild build` and `xcodebuild test` must run serially (shared `build.db`).
+> Key files: `OpenCodeClient/OpenCodeClient/Views/FileContentView.swift` (mode switching), `Utils/MarkdownImageResolver.swift` (data URI reuse).
 
-**并行预备（sub-agent，主 agent 验收后并入）** ✅
-- [x] 依赖调研 + 前端 shell：markdown-it 14.2.0 + DOMPurify 3.4.10（CDN-free，npm 取 dist 后拷出），shell 在 jsdom 里 5 项检查全过
-- [x] fixture 生成：§9.1 九个 `.md` + `images/chart.png`(6.8KB 真 PNG) + `images/diagram.svg`，large_markdown 70KB > 60KB 阈值，安全 fixture 含 4 个 payload + sentinel
+**Parallel prep (sub-agent, merged after main-agent acceptance)** ✅
+- [x] Dependency research + frontend shell: markdown-it 14.2.0 + DOMPurify 3.4.10 (CDN-free; dist pulled via npm then copied out); all 5 shell checks pass in jsdom
+- [x] Fixture generation: the nine `.md` from §9.1 + `images/chart.png` (a real 6.8KB PNG) + `images/diagram.svg`; large_markdown at 70KB exceeds the 60KB threshold; the security fixture carries 4 payloads + sentinel
 
-**Phase 0 — Spike（串行，主 agent）** ✅
-- [x] 新增 `MarkdownWebPreviewView.swift`（`UIViewRepresentable` 包 `WKWebView`）
-- [x] bundle `preview.html/css/js` + markdown-it + purify；**坑：同步文件夹会拍平子目录**，vendor 与 html 同级、src 去 `vendor/` 前缀；`loadFileURL(allowingReadAccessTo: bundleDir)`
-- [x] `window.renderMarkdown(payload)` 入口，Swift 用 JSONSerialization 经 `evaluateJavaScript` 注入（不拼字符串）
-- [x] WebView 内完成 渲染 + DOMPurify + 基础 CSS + 深浅色
-- [x] 用 `html_cards.md` / `dark_theme_cards.md` 模拟器手工验收：卡片成形、暗色无深底深字
-- [x] `xcodebuild build` 通过
+**Phase 0 — Spike (serial, main agent)** ✅
+- [x] Added `MarkdownWebPreviewView.swift` (a `UIViewRepresentable` wrapping `WKWebView`)
+- [x] Bundled `preview.html/css/js` + markdown-it + purify; **pitfall: synchronized folders flatten subdirectories**, so vendor sits next to the html and src drops the `vendor/` prefix; `loadFileURL(allowingReadAccessTo: bundleDir)`
+- [x] `window.renderMarkdown(payload)` entry point; Swift injects via JSONSerialization through `evaluateJavaScript` (no string concatenation)
+- [x] Rendering + DOMPurify + base CSS + light/dark all done inside the WebView
+- [x] Manual simulator acceptance with `html_cards.md` / `dark_theme_cards.md`: cards form correctly and dark mode has no dark-on-dark text
+- [x] `xcodebuild build` passes
 
-**Phase 1 — Files MVP（串行，主 agent）** ✅
-- [x] `FileContentView` 的 `showPreview: Bool` 改 `MarkdownPreviewMode` enum（`native` / `web` / `source`）
-- [x] toolbar 二态按钮改 Picker Menu：`Native Preview` / `Web Preview` / `Markdown Source`
-- [x] `contentView(text:)` 按 mode 分派；保留大文件保护（native 超阈值回 source；web 超阈值 oversize gate 先确认）
-- [x] `MarkdownWebPreviewContainer` 复用 `MarkdownImageResolver.resolveImages(...)` 生成 data-URI markdown 再传 WebView
-- [x] 加载中 / 渲染失败 / oversize 三态 + 一键回 Native/Source 按钮
-- [x] WebView 根节点(`markdown-web-preview-webview`) + mode menu(`markdown-preview-mode-menu`) 加 accessibility identifier
-- [x] 手工验收（模拟器截图存 outputs/web_preview_screenshots/）：HTML card / 暗色 / inline SVG / wide table / 安全过滤 通过
-- [x] `xcodebuild build` 通过
-- [x] UITEST_WEB_PREVIEW_FIXTURE + MarkdownWebPreviewUITests（5 test 全过，含安全 sentinel 断言）
+**Phase 1 — Files MVP (serial, main agent)** ✅
+- [x] `FileContentView`'s `showPreview: Bool` became a `MarkdownPreviewMode` enum (`native` / `web` / `source`)
+- [x] The toolbar's two-state button became a Picker Menu: `Native Preview` / `Web Preview` / `Markdown Source`
+- [x] `contentView(text:)` dispatches by mode; large-file protection kept (native over threshold falls back to source; web over threshold goes through an oversize gate with confirmation first)
+- [x] `MarkdownWebPreviewContainer` reuses `MarkdownImageResolver.resolveImages(...)` to produce data-URI markdown before handing it to the WebView
+- [x] Three states (loading / render failure / oversize) + one-tap buttons back to Native/Source
+- [x] Accessibility identifiers added to the WebView root (`markdown-web-preview-webview`) and mode menu (`markdown-preview-mode-menu`)
+- [x] Manual acceptance (simulator screenshots in outputs/web_preview_screenshots/): HTML card / dark / inline SVG / wide table / security filtering pass
+- [x] `xcodebuild build` passes
+- [x] UITEST_WEB_PREVIEW_FIXTURE + MarkdownWebPreviewUITests (all 5 tests pass, including security sentinel assertions)
 
-**Phase 2 — 安全与 polish（串行，主 agent）** ✅
-- [x] DOMPurify allowlist 禁 `script`/`iframe`/`form`/`object`/`embed`/`on*`/`javascript:`（shell 配置 + malicious_script fixture UI 断言 sentinel 渲染、script 不执行）
-- [x] `WKNavigationDelegate` 拦截非 file/fragment navigation + 外链 onOpenExternalURL；workspace 相对链接经 resolveRelativeReference 解析后落 fileToOpenInFilesTab
-- [x] WebView 用 non-persistent data store
-- [x] 主题：input 含 colorScheme，updateUIView 按 input diff 重渲染，不重建 WebView（容器读 @Environment(\.colorScheme)）
-- [x] UI tests：mode 切换 web↔source↔native 往返（UITEST_WEB_PREVIEW_MODE_FIXTURE）
-- [x] unit tests：8 个图片/链接路径预处理（同目录 / 子目录 / ./ / `../` / 深层 / workspace absolute / 外部 / nil mdPath）
-- [x] `xcodebuild build` + `xcodebuild test` 串行通过（291 passed，无回归）
+**Phase 2 — Security and polish (serial, main agent)** ✅
+- [x] DOMPurify allowlist blocks `script`/`iframe`/`form`/`object`/`embed`/`on*`/`javascript:` (shell config + malicious_script fixture UI assertions that the sentinel renders and script does not execute)
+- [x] `WKNavigationDelegate` intercepts non-file/fragment navigation + external links to onOpenExternalURL; workspace-relative links resolve through resolveRelativeReference into fileToOpenInFilesTab
+- [x] The WebView uses a non-persistent data store
+- [x] Theming: input carries colorScheme; updateUIView re-renders on input diff without rebuilding the WebView (the container reads @Environment(\.colorScheme))
+- [x] UI tests: mode switching web↔source↔native round trips (UITEST_WEB_PREVIEW_MODE_FIXTURE)
+- [x] Unit tests: 8 image/link path preprocessing cases (same directory / subdirectory / ./ / `../` / deep / workspace absolute / external / nil mdPath)
+- [x] `xcodebuild build` + `xcodebuild test` pass serially (291 passed, no regressions)
 
-**本轮交付完成（Phase 0/1/2）**：Web Preview 可在 Files 手动切换使用，HTML 卡片/暗色/
-inline SVG/wide table/安全过滤/相对链接全部验证。截图存 `outputs/web_preview_screenshots/`。
-未做（留后续）：Phase 3 `.html` artifact / Mermaid / 代码高亮 / 图片点击预览；
-真机（非 simulator）验收；自定义 URL scheme 大图优化（开放问题 1 的后续路线）。
-已知 fixture 细节：html_cards 的 per-status 颜色未完全还原（卡片成形但配色偏中性），
-非阻塞，后续可调 fixture CSS 选择器或 DOMPurify style 处理。
+**This round's delivery complete (Phase 0/1/2)**: Web Preview is manually switchable in Files, with HTML cards/dark/
+inline SVG/wide table/security filtering/relative links all verified. Screenshots in `outputs/web_preview_screenshots/`.
+Not done (left for later): Phase 3 `.html` artifacts / Mermaid / code highlighting / image tap preview;
+device (non-simulator) acceptance; custom URL scheme large-image optimization (the follow-up route for open question 1).
+Known fixture detail: html_cards' per-status colors are not fully reproduced (cards form but the palette reads neutral);
+non-blocking; the fixture CSS selectors or DOMPurify style handling can be tuned later.
 
-- [x] **PR 合并** — design-redesign / Web Preview 已在 master
-- [x] **Model 列表** — 不再维护写死 preset 表；改走 PR #149 shortlist
+- [x] **PR merged** — design-redesign / Web Preview is on master
+- [x] **Model list** — no more hardcoded preset table to maintain; moved to the PR #149 shortlist
 
-## 已完成（近期）
+## Completed (recent)
 
-- [x] **Composer send/stop 逻辑回归修复（2026-05-29）**：
-  - [x] 根因：Quiet Tech composer 重做时把 primary action 写成 `if state.isBusy { stop } else { send }`，导致 AI 运行时 send 按钮被 stop 替换，用户必须先终止才能发新消息——破坏了"一个发送 + 一个终止、运行中也能直接发"的既定产品行为（WORKING 早有记录："恢复 AI 工作中仍可发送消息：send 始终可见，stop/abort 同时显示"）
-  - [x] 修复：send 按钮**始终渲染**（`canSendNow` 不含 busy 判断，busy 时只要有文字即可发），stop 改为 busy 时**额外**出现的按钮，而非替换 send；二者**上下排列**（send 在上、stop 在下，VStack），不左右并排
-  - [x] 文档：design.md composer 段原本就把错误行为写成"send 原位替换为 stop"，已改正为"send 始终保留、stop 额外并存、上下排列"——根源是设计稿描述与产品行为矛盾
-  - [x] 验证：iPhone build 通过
-  - **分支**：`fix-composer-send-while-busy`（off master）
+- [x] **Composer send/stop logic regression fix (2026-05-29)**:
+  - [x] Root cause: the Quiet Tech composer rework wrote the primary action as `if state.isBusy { stop } else { send }`, so while the AI ran the send button was replaced by stop and the user had to terminate first to send a new message, breaking the established product behavior of "one send + one stop, send directly while running" (WORKING recorded this early: "restore sending while the AI works: send always visible, stop/abort shown at the same time")
+  - [x] Fix: the send button **always renders** (`canSendNow` has no busy check; while busy, text alone is enough to send), and stop became a button that appears **in addition** while busy instead of replacing send; the two **stack vertically** (send on top, stop below, VStack), not side by side
+  - [x] Docs: design.md's composer section had described the wrong behavior as "send replaced in place by stop"; corrected to "send always kept, stop additionally present, stacked vertically"; the root was the design doc contradicting product behavior
+  - [x] Verification: iPhone build passes
+  - **Branch**: `fix-composer-send-while-busy` (off master)
 
-- [x] **Quiet Tech 视觉设计语言落地（2026-05-29）**：
-  - [x] 背景：`docs/design.md` 锁定的 "Quiet Tech 冷静科技感" 设计稿（PR #62）落进 SwiftUI 代码，逐屏在模拟器截图对照 `docs/design_images/` 四张 mockup 迭代到一致
-  - [x] `DesignTokens`：Brand 主色 → 电蓝 `#3B82F6`，gold 仅留给"AI 工作中"；surface/composer 灌入设计稿深色值。token **名称不变**，所有 View 继续引用，避免大面积改动
-  - [x] 卡片三态语言：信息卡（tool）中性 surface 底，但**图标/工具名/文件路径/chevron 用电蓝**作为"可点"暗示（卡身中性、accent 只点在可交互元素上）；操作卡（permission）左 3pt 蓝条 + 纯文字按钮（去掉绿/蓝/红三色实底按钮）；patch 卡去橙 → 单一蓝 accent
-  - [x] 消息区：用户消息保留 3pt 蓝左条 + muted 底（去掉上方 divider，靠间距分隔）；AI 回复无容器
-  - [x] Composer：收成单 pill，mic 移入框内左（无描边），send 实底蓝圆角方块贴右（busy 时 stop 替换）
-  - [x] Toolbar：朴素 glyph 取代填充圆；模型选择器从实底蓝胶囊 → 描边 chip
-  - [x] Session 行：选中态左蓝条 baked 进圆角选中背景并 clip 在圆角内，不再戳出/与展开 chevron 打架
-  - [x] Settings：Theme 改分段控件
-  - [x] iPad：三栏默认全展开（`columnVisibility = .all`）；sidebar 的 file tree 默认收起为 disclosure，sidebar 主要作 session picker
-  - [x] iPhone tool/patch 卡片两列 grid（信息密度），iPad 三列
-  - [x] Bug 修复：重启恢复 session 时补加载消息（`loadSessions` 之前只设 `currentSessionID`，`selectSession` 因 id 已匹配而短路不拉消息，导致重启落在上次 session 显示空白历史，需手动切走再切回）
-  - [x] 验证：iPhone 16 Pro + iPad Pro 11" build 干净；连本地 server 真实数据截图对照 Chat（空态 + tool/patch/permission 卡片）/ Settings / iPad 三栏
+- [x] **Quiet Tech visual design language landed (2026-05-29)**:
+  - [x] Background: the "Quiet Tech calm-tech" design spec locked in `docs/design.md` (PR #62) was brought into SwiftUI code, iterating screen by screen against the four mockups in `docs/design_images/` with simulator screenshots until they matched
+  - [x] `DesignTokens`: Brand primary → electric blue `#3B82F6`, with gold reserved for "AI working"; surface/composer filled with the spec's dark values. Token **names unchanged** so every View keeps referencing them, avoiding sweeping changes
+  - [x] Three-state card language: info cards (tool) keep a neutral surface but **icons/tool name/file path/chevron use electric blue** as the "tappable" cue (neutral card body, accent only on interactive elements); action cards (permission) get a 3pt blue left bar + plain text buttons (dropping the green/blue/red solid buttons); patch cards dropped orange → single blue accent
+  - [x] Message area: user messages keep the 3pt blue left bar + muted background (divider above removed, spacing does the separating); AI replies have no container
+  - [x] Composer: collapsed into a single pill, mic moved inside on the left (no border), send as a solid blue rounded square on the right (stop replaces it while busy)
+  - [x] Toolbar: plain glyphs replace filled circles; the model selector went from a solid blue capsule to an outlined chip
+  - [x] Session rows: the selected state's left blue bar is baked into the rounded selection background and clipped inside the corners, so it no longer pokes out or fights the expand chevron
+  - [x] Settings: Theme became a segmented control
+  - [x] iPad: all three columns expanded by default (`columnVisibility = .all`); the sidebar's file tree defaults to a collapsed disclosure, with the sidebar mainly acting as session picker
+  - [x] iPhone tool/patch cards in a two-column grid (information density); three columns on iPad
+  - [x] Bug fix: messages now load when a session is restored after restart (`loadSessions` previously only set `currentSessionID`; `selectSession` short-circuited because the id already matched and never pulled messages, so a restart landed on the last session showing blank history until you manually switched away and back)
+  - [x] Verification: iPhone 16 Pro + iPad Pro 11" builds clean; screenshots against a local server's real data compared for Chat (empty state + tool/patch/permission cards) / Settings / the iPad three columns
   - **PR**: #63 — feat(design): implement the "Quiet Tech" visual language
 
-- [x] **Realtime speech WebSocket recovery V2（2026-05-25）**：
-  - [x] 产品语义：长录音期间 WebSocket 断开时不中断录音，客户端用本地 PCM cache 恢复，而不是等 Stop 后才失败
-  - [x] 技术方案：每个 PCM chunk 同时写入临时 `.pcm` 文件和 live WebSocket；heartbeat / send failure 触发新 session，从 cache offset 0 replay 到当前文件末尾，追上后继续 live 发送；Stop 时等待恢复完成再 commit/stop
-  - [x] 约束：第一版接受每次断线都从头 replay，十分钟 PCM16 mono 24kHz 约 30MB，优先保证可靠性，性能问题后续再优化 checkpoint
-  - [x] 启动体验优化：点击麦克风后立即开始 `AVAudioEngine` 录音并写入本地 PCM cache；AI Builder session POST 在后台完成，session ready 后 replay 启动期间缓存的 PCM，避免首包网络等待导致录音按钮半透明但未采集。
+- [x] **Realtime speech WebSocket recovery V2 (2026-05-25)**:
+  - [x] Product semantics: a WebSocket drop during a long recording does not interrupt the recording; the client recovers from a local PCM cache instead of failing only at Stop
+  - [x] Technical approach: every PCM chunk is written to a temp `.pcm` file and to the live WebSocket; a heartbeat / send failure starts a new session and replays from cache offset 0 to the current file end, resuming live sends once caught up; Stop waits for recovery to finish before commit/stop
+  - [x] Constraint: v1 accepts replaying from scratch on every disconnect; ten minutes of PCM16 mono 24kHz is about 30MB. Reliability comes first, with checkpoints as a later performance optimization
+  - [x] Startup experience: tapping the microphone starts `AVAudioEngine` recording and local PCM cache writes immediately; the AI Builder session POST completes in the background and, once the session is ready, PCM cached during startup is replayed, avoiding a translucent recording button that is not actually capturing while the first network packet waits.
 
-- [x] **Voiceflow-style 单 app target 迁移起步（2026-05-02）**：
-  - [x] 对照 `adhoc_jobs/brainwave_mobile/brainwave_ios` 的 Voiceflow 配置，确认它不是独立 visionOS app target，而是主 app target 同时支持 `iphoneos iphonesimulator xros xrsimulator`，`TARGETED_DEVICE_FAMILY = "1,2,7"`，并保持同一个 bundle id
-  - [x] 将 `OpenCodeClient` 主 target 改为支持 iPhone / iPad / Apple Vision：新增 `SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator"`、`TARGETED_DEVICE_FAMILY = "1,2,7"`、`XROS_DEPLOYMENT_TARGET = 26.0`、`SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO`
-  - [x] 起初将 `OpenCodeClientVisionAssets.xcassets` 接入主 target resources，使主 target 的 visionOS build 能复用现有 layered app icon；验证通过后继续收敛到主 asset catalog
-  - [x] `Citadel` / SSH tunnel 依赖保留在主 target，但通过 build phase `platformFilters = (ios, )` 限制为 iOS-only，避免 native visionOS build 继续拉起 `swift-nio-ssh`；visionOS 运行时仍走现有 `#if os(visionOS)` stub，Settings 中隐藏 SSH Tunnel
-  - [x] 验证：`xcodebuild -showdestinations -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient"` 已显示 native `platform:visionOS` / `platform:visionOS Simulator` destinations；`xcodebuild build -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=visionOS Simulator,id=FBB8C85C-5EC8-40CC-B2CF-DAEC86BA530B' CODE_SIGNING_ALLOWED=NO` 通过；`xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,id=302F88CA-C2D3-4DC0-8E12-B3ED82D5A3C8' CODE_SIGNING_ALLOWED=NO` 通过
+- [x] **Voiceflow-style single app target migration started (2026-05-02)**:
+  - [x] Compared against the Voiceflow configuration in `adhoc_jobs/brainwave_mobile/brainwave_ios` and confirmed it is a single main app target supporting `iphoneos iphonesimulator xros xrsimulator` with `TARGETED_DEVICE_FAMILY = "1,2,7"` and one shared bundle id, rather than a separate visionOS app target
+  - [x] The `OpenCodeClient` main target now supports iPhone / iPad / Apple Vision: added `SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator"`, `TARGETED_DEVICE_FAMILY = "1,2,7"`, `XROS_DEPLOYMENT_TARGET = 26.0`, `SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO`
+  - [x] Initially wired `OpenCodeClientVisionAssets.xcassets` into the main target's resources so the main target's visionOS build could reuse the existing layered app icon; after verification passed, work converged further onto the main asset catalog
+  - [x] `Citadel` / SSH tunnel dependencies stay in the main target but are limited to iOS-only via build phase `platformFilters = (ios, )`, so native visionOS builds stop pulling in `swift-nio-ssh`; visionOS runtime still uses the existing `#if os(visionOS)` stub and Settings hides SSH Tunnel
+  - [x] Verification: `xcodebuild -showdestinations -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient"` shows native `platform:visionOS` / `platform:visionOS Simulator` destinations; `xcodebuild build -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=visionOS Simulator,id=FBB8C85C-5EC8-40CC-B2CF-DAEC86BA530B' CODE_SIGNING_ALLOWED=NO` passes; `xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,id=302F88CA-C2D3-4DC0-8E12-B3ED82D5A3C8' CODE_SIGNING_ALLOWED=NO` passes
 
-- [x] **旧 `OpenCodeClientVision` target 删除（2026-05-02）**：
-  - [x] 删除独立 `OpenCodeClientVision` app target、product、build phases、build settings 和 shared scheme，项目只保留 `OpenCodeClient` 一个 app target
-  - [x] 删除独立 `OpenCodeClientVisionAssets.xcassets`，将 `AppIcon.solidimagestack` 移入主 `OpenCodeClient/Assets.xcassets`，让 iOS flat icon 和 visionOS layered icon 都归属于同一个 app target 的 asset catalog
-  - [x] README 构建说明改为单一 `OpenCodeClient` scheme：iPhone、iPad、Apple Vision Pro 都从同一个 scheme 和 bundle identifier 分发
+- [x] **Old `OpenCodeClientVision` target deleted (2026-05-02)**:
+  - [x] Removed the standalone `OpenCodeClientVision` app target, product, build phases, build settings, and shared scheme; the project keeps a single `OpenCodeClient` app target
+  - [x] Removed the standalone `OpenCodeClientVisionAssets.xcassets` and moved `AppIcon.solidimagestack` into the main `OpenCodeClient/Assets.xcassets`, so both the iOS flat icon and the visionOS layered icon belong to the same app target's asset catalog
+  - [x] README build instructions now describe the single `OpenCodeClient` scheme: iPhone, iPad, and Apple Vision Pro all ship from the same scheme and bundle identifier
 
-- [x] **Speech recognition 失败时保留 partial transcript（2026-05-02）**：
-  - [x] 根因：`ChatTabView.toggleRecording()` 在 transcription catch 路径中把 `inputText` 回滚到录音前的 `prefix`；当 AI Builders realtime WebSocket 已经流式返回 partial transcript 后再报错时，用户已经看到的文本会被覆盖掉，空 prefix 场景表现为输入框被清空
-  - [x] 修复：新增线程安全的 `SpeechPartialTranscriptBuffer`，partial callback 每次同步记录最后一版 transcript；失败时使用 `prefix + lastPartialTranscript` 恢复输入框，没有 partial 时保持原 prefix 行为
-  - [x] 测试：新增 `speechFailureInputPreservesLastPartialTranscript()` 与 `speechFailureInputFallsBackToPrefixWithoutPartialTranscript()`，覆盖失败恢复和无 partial fallback
-  - [x] 验证：`xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,id=302F88CA-C2D3-4DC0-8E12-B3ED82D5A3C8' CODE_SIGNING_ALLOWED=NO` 通过；`xcodebuild build -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClientVision" -destination 'platform=visionOS Simulator,id=FBB8C85C-5EC8-40CC-B2CF-DAEC86BA530B' CODE_SIGNING_ALLOWED=NO` 通过
+- [x] **Preserve partial transcript when speech recognition fails (2026-05-02)**:
+  - [x] Root cause: `ChatTabView.toggleRecording()` rolled `inputText` back to the pre-recording `prefix` in the transcription catch path; when the AI Builders realtime WebSocket had already streamed a partial transcript before erroring, text the user had already seen was overwritten, and with an empty prefix the input box appeared to be cleared
+  - [x] Fix: added a thread-safe `SpeechPartialTranscriptBuffer` whose partial callback synchronously records the latest transcript each time; on failure the input box is restored with `prefix + lastPartialTranscript`, and without a partial the original prefix behavior holds
+  - [x] Tests: added `speechFailureInputPreservesLastPartialTranscript()` and `speechFailureInputFallsBackToPrefixWithoutPartialTranscript()`, covering failure recovery and the no-partial fallback
+  - [x] Verification: `xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,id=302F88CA-C2D3-4DC0-8E12-B3ED82D5A3C8' CODE_SIGNING_ALLOWED=NO` passes; `xcodebuild build -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClientVision" -destination 'platform=visionOS Simulator,id=FBB8C85C-5EC8-40CC-B2CF-DAEC86BA530B' CODE_SIGNING_ALLOWED=NO` passes
 
-- [x] **visionOS layered app icon（2026-05-01）**：
-  - [x] 基于现有 `OpenCodeClient/Assets.xcassets/AppIcon.appiconset/AppIcon.png` 生成 visionOS 三层 icon：background / middle / foreground
-  - [x] 最终采用程序按原图颜色分层，而不是直接采用模型输出透明层；这样 composite preview 与原图逐像素一致，避免透明背景被模型画成棋盘格、或绿幕抠图留下彩边
-  - [x] 新增 `OpenCodeClientVisionAssets.xcassets/AppIcon.solidimagestack`，并只加入 `OpenCodeClientVision` target 的 Resources；共享 `OpenCodeClient/Assets.xcassets` 继续只保留 iOS `AppIcon`
-  - [x] visionOS app icon catalog 使用 Xcode 生成的 `.solidimagestack` / `.solidimagestacklayer` 结构；每层 `Content.imageset` 使用 `idiom: vision`、`scale: 2x`，并指向 1024×1024 PNG
-  - [x] `OpenCodeClient` 与 `OpenCodeClientVision` target 都使用 `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`；由于两个 target 引用不同 asset catalog，iOS 使用 flat `AppIcon.appiconset`，visionOS 使用 `AppIcon.solidimagestack`
-  - [x] 验证：`OpenCodeClient` iphonesimulator build 通过；`OpenCodeClientVision` xrsimulator build 通过；`assetutil --info` 确认编译后的 `Assets.car` 里存在 `SolidImageStack`，名字为 `AppIcon`，三层分别为 Back / Middle / Front
+- [x] **visionOS layered app icon (2026-05-01)**:
+  - [x] Generated the visionOS three-layer icon (background / middle / foreground) from the existing `OpenCodeClient/Assets.xcassets/AppIcon.appiconset/AppIcon.png`
+  - [x] Layering was ultimately done programmatically from the original image's colors rather than adopting the model's transparent layers directly; the composite preview then matches the original pixel for pixel, avoiding transparent backgrounds painted as checkerboards by the model or colored fringes left by green-screen keying
+  - [x] Added `OpenCodeClientVisionAssets.xcassets/AppIcon.solidimagestack`, included only in the `OpenCodeClientVision` target's Resources; the shared `OpenCodeClient/Assets.xcassets` keeps only the iOS `AppIcon`
+  - [x] The visionOS app icon catalog uses Xcode's generated `.solidimagestack` / `.solidimagestacklayer` structure; each layer's `Content.imageset` uses `idiom: vision` and `scale: 2x`, pointing at 1024×1024 PNGs
+  - [x] Both the `OpenCodeClient` and `OpenCodeClientVision` targets use `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`; because the two targets reference different asset catalogs, iOS uses the flat `AppIcon.appiconset` and visionOS uses `AppIcon.solidimagestack`
+  - [x] Verification: `OpenCodeClient` iphonesimulator build passes; `OpenCodeClientVision` xrsimulator build passes; `assetutil --info` confirms the compiled `Assets.car` contains a `SolidImageStack` named `AppIcon` with the three layers Back / Middle / Front
 
-- [x] **visionOS 输入区交互尺寸与窗口默认大小（2026-05-01）**：
-  - [x] 录音按钮 active 状态改为红色 icon + 红色 tint 背景/描边，避免 visionOS glass/material compositing 把原来的纯红背景洗成白色
-  - [x] composer 右侧 mic / send / stop 三个 action buttons 在 visionOS 上从 32pt 放大到 48pt，并把垂直间距放宽到 12pt，降低 gaze interaction 难度；iPhone/iPad 保持原 32pt 尺寸
-  - [x] stop 按钮在 AI busy 时改为与录音 active 态一致的红色 icon + tint 背景/描边，而不是纯红实心背景；这样在 visionOS glass/material 下更容易保持红色语义
-  - [x] composer 底部容器 padding 改为 design token：visionOS 使用 32pt horizontal / 20pt vertical，iPhone/iPad 保持 16pt / 10pt，避免右下角按钮贴近 Apple Vision Pro window resize handle
-  - [x] composer 输入框高度改为跨平台 token：visionOS 48–160pt，iPhone/iPad 32–100pt，避免大窗口里输入区仍按手机高度限制
-  - [x] tool-call header 右侧 open-file 图标在 visionOS 上放大为 44pt hit target + `title3` icon，方便用眼控/手势打开 patch/edit 详情文件；iPhone/iPad 保持 24pt 紧凑尺寸
-  - [x] visionOS split view 左侧 Workspace / Sessions sidebar 宽度调到 iPad 默认的 130%（`1.3 / 6.0`），最小宽度同步从 10% 提到 13%
-  - [x] `OpenCodeClientVision` 默认窗口尺寸设为 2304×1080，约为系统默认宽度的 180%、高度的 150%，减少首次打开后手动拉大窗口的需求
-  - [x] 后续根据实机观感把默认窗口调窄并略增高：宽度从 2304 降到 1382（约 60%），高度从 1080 增到 1188（约 110%）；再把宽度微调到 1500，高度保持 1188
-  - [x] 后续继续把默认窗口宽度调到 2000，高度保持 1188
-  - [x] 验证：`OpenCodeClientVision` xrsimulator build 通过；`OpenCodeClient` iphonesimulator build 通过
+- [x] **visionOS input area interaction sizes and default window size (2026-05-01)**:
+  - [x] The recording button's active state became a red icon + red tint background/border, avoiding visionOS glass/material compositing washing the original solid red background out to white
+  - [x] The composer's right-side mic / send / stop action buttons grew from 32pt to 48pt on visionOS with vertical spacing loosened to 12pt, making gaze interaction easier; iPhone/iPad keep the original 32pt size
+  - [x] The stop button while the AI is busy became a red icon + tint background/border matching the recording active state, instead of a solid red background, so the red semantics survive better under visionOS glass/material
+  - [x] The composer's bottom container padding became a design token: visionOS uses 32pt horizontal / 20pt vertical, iPhone/iPad keep 16pt / 10pt, keeping the bottom-right button away from the Apple Vision Pro window resize handle
+  - [x] The composer input height became a cross-platform token: visionOS 48–160pt, iPhone/iPad 32–100pt, so the input area in large windows is no longer limited to phone height
+  - [x] The tool-call header's right-side open-file icon grew to a 44pt hit target + `title3` icon on visionOS, easing eye/hand opening of patch/edit detail files; iPhone/iPad keep the compact 24pt size
+  - [x] The visionOS split view's left Workspace / Sessions sidebar width set to 130% of the iPad default (`1.3 / 6.0`), with the minimum width raised from 10% to 13% in step
+  - [x] `OpenCodeClientVision`'s default window size set to 2304×1080, about 180% of the system default width and 150% of its height, reducing the need to manually enlarge the window after first launch
+  - [x] Later, based on real-device impressions, the default window was made narrower and slightly taller: width from 2304 down to 1382 (about 60%), height from 1080 up to 1188 (about 110%); then width nudged to 1500 with height kept at 1188
+  - [x] Later still the default window width went to 2000, height kept at 1188
+  - [x] Verification: `OpenCodeClientVision` xrsimulator build passes; `OpenCodeClient` iphonesimulator build passes
 
-- [x] **visionOS 原生 target 基线（2026-04-30）**：
-  - [x] 新增 `OpenCodeClientVision` application target，SDK 指向 `xros`，device family 设为 Vision，源码复用现有 `OpenCodeClient/` synchronized root group
-  - [x] 保留 iPad 三栏 `NavigationSplitView` 作为 visionOS 的主 layout；不引入 tab-based 顶层导航
-  - [x] visionOS 首版不支持 SSH tunnel：`Settings` 中隐藏 SSH Tunnel section，启动/前后台恢复流程不再尝试自动连接 tunnel；底层 `SSHTunnelManager` 在 visionOS 使用 stub，避免链接 Citadel / swift-nio-ssh
-  - [x] visionOS 首版先用系统 `AttributedString(markdown:)` 验证 target 能独立编译；后续已切换到本地 patched MarkdownUI / NetworkImage
-  - [x] 兼容 visionOS API：将 `scrollDismissesKeyboard(.immediately)` 包装为平台条件修饰符，visionOS 下跳过该 unavailable modifier
-  - [x] 验证：`xcodebuild -project "OpenCodeClient.xcodeproj" -target "OpenCodeClientVision" -configuration Debug -sdk xrsimulator CODE_SIGNING_ALLOWED=NO build` 通过
-  - [x] 后续验证：本地 patched MarkdownUI / NetworkImage 已能让 visionOS target 直接使用 `MarkdownUI.Markdown`
+- [x] **visionOS native target baseline (2026-04-30)**:
+  - [x] Added the `OpenCodeClientVision` application target with SDK pointing at `xros`, device family set to Vision, and source reusing the existing `OpenCodeClient/` synchronized root group
+  - [x] Kept the iPad three-column `NavigationSplitView` as visionOS's main layout; no tab-based top-level navigation introduced
+  - [x] visionOS v1 does not support SSH tunnel: the SSH Tunnel section is hidden in `Settings`, and startup/foreground-background restore no longer attempts to auto-connect the tunnel; the underlying `SSHTunnelManager` uses a stub on visionOS to avoid linking Citadel / swift-nio-ssh
+  - [x] visionOS v1 first used the system `AttributedString(markdown:)` to prove the target could compile standalone; it later switched to the locally patched MarkdownUI / NetworkImage
+  - [x] visionOS API compatibility: `scrollDismissesKeyboard(.immediately)` wrapped in a platform-conditional modifier that skips the unavailable modifier on visionOS
+  - [x] Verification: `xcodebuild -project "OpenCodeClient.xcodeproj" -target "OpenCodeClientVision" -configuration Debug -sdk xrsimulator CODE_SIGNING_ALLOWED=NO build` passes
+  - [x] Later verification: the locally patched MarkdownUI / NetworkImage let the visionOS target use `MarkdownUI.Markdown` directly
 
-- [x] **MarkdownUI / NetworkImage visionOS package patch（2026-05-01）**：
-  - [x] 最初新增 `third_party/swift-markdown-ui`（2.4.1）和 `third_party/NetworkImage`（6.0.1）本地 package source，用 Xcode local package reference 替代远端 MarkdownUI reference
-  - [x] 后续迁移到 GitHub forks：`grapeot/swift-markdown-ui` tag `2.4.1-visionos.1` 和 `grapeot/NetworkImage` tag `6.0.1-visionos.1`，Xcode project 使用 exact version 引用，不再 vendor `third_party/`
-  - [x] `swift-markdown-ui/Package.swift` 升到 Swift tools 5.9，声明 `.visionOS(.v1)`，并把 `NetworkImage` 指向 `https://github.com/grapeot/NetworkImage` exact `6.0.1-visionos.1`
-  - [x] `NetworkImage/Package.swift` 升到 Swift tools 5.9，声明 `.visionOS(.v1)`；`NetworkImage.swift` 增加 visionOS availability，并用 1x1 transparent `CGImage` 作为空图占位，避开 UIKit/AppKit-only empty image initializer
-  - [x] `MessageRowView` 与 `FileContentView` 在 visionOS 上恢复使用 `MarkdownUI.Markdown`，删除临时 native Markdown fallback
-  - [x] 打开 visionOS Markdown embedded image 支持：`OpenCodeClientVision` 显式链接 `NetworkImage`，`FileContentView` 与 `MessageRowView` 在 visionOS 上复用 iOS 的 `WorkspaceMarkdownImageProvider` / `MarkdownImageResolver` 路径
-  - [x] visionOS 上点击 Markdown embedded image 时改为打开独立 Image Preview window；iPhone/iPad 继续使用原有 sheet 预览
-  - [x] 验证：`xcodebuild -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClientVision" -configuration Debug -sdk xrsimulator CODE_SIGNING_ALLOWED=NO build` 通过
-  - [x] 验证：`xcodebuild -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -configuration Debug -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build` 通过
-  - [x] 后续验证：打开 visionOS Markdown image gate 后，`OpenCodeClientVision` xrsimulator build 与 `OpenCodeClient` iphonesimulator build 均通过
+- [x] **MarkdownUI / NetworkImage visionOS package patch (2026-05-01)**:
+  - [x] Initially added `third_party/swift-markdown-ui` (2.4.1) and `third_party/NetworkImage` (6.0.1) as local package sources, replacing the remote MarkdownUI reference with an Xcode local package reference
+  - [x] Later migrated to GitHub forks: `grapeot/swift-markdown-ui` tag `2.4.1-visionos.1` and `grapeot/NetworkImage` tag `6.0.1-visionos.1`, referenced by the Xcode project at exact versions, no longer vendoring `third_party/`
+  - [x] `swift-markdown-ui/Package.swift` raised to Swift tools 5.9, declaring `.visionOS(.v1)`, and pointed `NetworkImage` at `https://github.com/grapeot/NetworkImage` exact `6.0.1-visionos.1`
+  - [x] `NetworkImage/Package.swift` raised to Swift tools 5.9, declaring `.visionOS(.v1)`; `NetworkImage.swift` gained visionOS availability and uses a 1x1 transparent `CGImage` as the empty-image placeholder, avoiding the UIKit/AppKit-only empty image initializer
+  - [x] `MessageRowView` and `FileContentView` returned to `MarkdownUI.Markdown` on visionOS, deleting the temporary native Markdown fallback
+  - [x] Opened up visionOS Markdown embedded image support: `OpenCodeClientVision` explicitly links `NetworkImage`, and `FileContentView` plus `MessageRowView` reuse the iOS `WorkspaceMarkdownImageProvider` / `MarkdownImageResolver` path on visionOS
+  - [x] Tapping a Markdown embedded image on visionOS opens a standalone Image Preview window; iPhone/iPad keep the original sheet preview
+  - [x] Verification: `xcodebuild -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClientVision" -configuration Debug -sdk xrsimulator CODE_SIGNING_ALLOWED=NO build` passes
+  - [x] Verification: `xcodebuild -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -configuration Debug -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build` passes
+  - [x] Later verification: after opening the visionOS Markdown image gate, both the `OpenCodeClientVision` xrsimulator build and the `OpenCodeClient` iphonesimulator build pass
 
-- [x] **默认模型切换到 GPT-5.5（2026-04-28）**：
-  - [x] 默认发送模型从 DeepSeek 切换为 `openai/gpt-5.5`
-  - [x] GPT 预设显示名和 model ID 从 `GPT-5.4` / `gpt-5.4` 升级为 `GPT-5.5` / `gpt-5.5`
-  - [x] 为已保存旧 `openai/gpt-5.4` 选择的 session 增加兼容映射，避免模型 selector 回退
-  - [x] 新增默认选择与旧 GPT 选择迁移测试
+- [x] **Default model switched to GPT-5.5 (2026-04-28)**:
+  - [x] Default send model switched from DeepSeek to `openai/gpt-5.5`
+  - [x] GPT preset display name and model ID upgraded from `GPT-5.4` / `gpt-5.4` to `GPT-5.5` / `gpt-5.5`
+  - [x] Added a compatibility mapping for sessions with a saved `openai/gpt-5.4` selection so the model selector does not fall back
+  - [x] Added tests for the default selection and legacy GPT selection migration
 
-- [x] **Markdown 报告图片渲染修复（2026-04-15）**：
-  - [x] 根因确认：Android 能显示报告内图片，不是 markdown 内容问题；Android 会先把相对图片路径解析成 `data:` URI 再渲染，而 iOS 聊天视图原来只做了路径解析，没有把能渲染 `data:` URL 的 image provider 接上
-  - [x] `MessageRowView`：为聊天中的 `ResolvedMarkdownView` 补上 `WorkspaceMarkdownImageProvider`，让已经被 `MarkdownImageResolver` 转换好的 `data:` URI 真正显示出来
-  - [x] `WorkspaceMarkdownImageProvider`：增加 `workspaceDirectory` 参与路径相对化，避免 markdown 图片在文件预览里带着绝对 workspace 前缀走错 `/file/content` API path
-  - [x] `FileContentView`：将 `state.currentSession?.directory` 传入 `MarkdownPreviewView` / `WorkspaceMarkdownImageProvider`，让文件预览与聊天视图在 workspace 路径语义上保持一致
-  - [x] 测试修正：`WorkspaceMarkdownImageProviderTests.decodesBase64DataURL()` 改为使用真实 1x1 PNG 的 base64，而不是无效的 `"hello"` payload；新增 absolute-workspace prefix stripping 覆盖
-  - [x] 验证：`xcodebuild -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4' build` 通过；同目标 `test` 通过
+- [x] **Markdown report image rendering fix (2026-04-15)**:
+  - [x] Root cause confirmed: Android could display images inside reports, so this was not a markdown content problem; Android resolves relative image paths into `data:` URIs before rendering, while the iOS chat view originally only did path resolution and never hooked up an image provider that could render `data:` URLs
+  - [x] `MessageRowView`: added `WorkspaceMarkdownImageProvider` to the chat's `ResolvedMarkdownView` so `data:` URIs already converted by `MarkdownImageResolver` actually display
+  - [x] `WorkspaceMarkdownImageProvider`: added `workspaceDirectory` participating in path relativization, preventing markdown images in file preview from carrying an absolute workspace prefix into the wrong `/file/content` API path
+  - [x] `FileContentView`: passes `state.currentSession?.directory` into `MarkdownPreviewView` / `WorkspaceMarkdownImageProvider`, keeping file preview and chat view consistent on workspace path semantics
+  - [x] Test fix: `WorkspaceMarkdownImageProviderTests.decodesBase64DataURL()` now uses the base64 of a real 1x1 PNG instead of the invalid `"hello"` payload; added absolute-workspace prefix stripping coverage
+  - [x] Verification: `xcodebuild -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4' build` passes; `test` on the same destination passes
   - **Commit**: `5554fe9` — fix: render markdown report images on ios
   - **Commit**: `45044d4` — test: align markdown image provider data-url coverage
 
-- [x] **Markdown caption 图片块预览修复（2026-05-03）**：
-  - [x] 根因确认：`![image](url)` 后紧跟 caption 且中间没有空行时，MarkdownUI 会把图片解析为 paragraph 内的 inline image，绕过 `WorkspaceMarkdownImageProvider`，导致远程大图按原始尺寸显示且无法点击预览。
-  - [x] `MarkdownPreviewView` 渲染前将“单独一行图片 + 下一行非空文本”规范化为 image block，不改原始文件内容；真正的行内图片保持不变。
-  - [x] `WorkspaceMarkdownImageProvider` 为远程 HTTP(S) 图片增加 URLSession 直接下载路径，避免远程图片依赖 OpenCode server 的 base64 文件接口。
-  - [x] 新增 normalizer 测试与 HTTP(S) URL 路径测试；验证 `xcodebuild test` 通过。
+- [x] **Markdown caption image block preview fix (2026-05-03)**:
+  - [x] Root cause confirmed: when `![image](url)` is immediately followed by a caption with no blank line between, MarkdownUI parses the image as an inline image inside a paragraph, bypassing `WorkspaceMarkdownImageProvider`, so remote large images displayed at original size and could not be tapped for preview.
+  - [x] `MarkdownPreviewView` normalizes "an image alone on one line + non-empty text on the next" into an image block before rendering, without touching the original file content; genuine inline images stay unchanged.
+  - [x] `WorkspaceMarkdownImageProvider` gained a direct URLSession download path for remote HTTP(S) images, so remote images no longer depend on the OpenCode server's base64 file endpoint.
+  - [x] Added normalizer tests and HTTP(S) URL path tests; verified `xcodebuild test` passes.
 
-- [x] **视觉重设计 Phase 2 — Mic 按钮 + 色彩统一 + 交互修复（2026-04-01）**：
-  - [x] Mic 按钮移至发送按钮上方 VStack，添加圆角描边（1.5pt brand blue）使其可识别为可点击按钮
-  - [x] Brand primary 从深蓝 `(0.15, 0.25, 0.55)` 改为系统蓝 `(0.0, 0.478, 1.0)`，与 iOS accent 统一
-  - [x] 全局 7 处 `.accentColor` 替换为 `DesignColors.Brand.primary`（ChatToolbarView 4 处、SessionListView 1 处、ContextUsageView 1 处、ToolPartView 1 处）
-  - [x] Transcribing 状态恢复可见（`surfaceLight`/`surfaceDark` 背景替代 `Color.clear`）
-  - [x] 恢复 AI 工作中仍可发送消息（send 按钮始终可见，stop/abort 在下方同时显示）
+- [x] **Visual redesign Phase 2 — Mic button + color unification + interaction fixes (2026-04-01)**:
+  - [x] Mic button moved into a VStack above the send button, with a rounded border (1.5pt brand blue) so it reads as a tappable button
+  - [x] Brand primary changed from dark blue `(0.15, 0.25, 0.55)` to system blue `(0.0, 0.478, 1.0)`, unified with the iOS accent
+  - [x] All 7 `.accentColor` occurrences replaced with `DesignColors.Brand.primary` (4 in ChatToolbarView, 1 in SessionListView, 1 in ContextUsageView, 1 in ToolPartView)
+  - [x] Transcribing state visible again (`surfaceLight`/`surfaceDark` backgrounds replace `Color.clear`)
+  - [x] Restored sending while the AI works (send button always visible, stop/abort shown below at the same time)
   - **Commit**: `122f29c` — fix: mic button to right side with border, unify brand color to system blue
   - **Commit**: `4bf2e12` — fix: restore transcribing visual feedback and send-while-busy
 
-- [x] **Design Token 测试覆盖（2026-04-01）**：
-  - [x] 新增 `DesignTokensTests`（9 个测试）：spacing 精确值 + 单调递增、corner radii 正向排序、brand primary/gold RGB 范围、opacity 合法范围 + 暗色 > 亮色、animation slots 存在性、semantic 色互不相同
-  - [x] 所有测试通过，`xcodebuild test` green
+- [x] **Design Token test coverage (2026-04-01)**:
+  - [x] Added `DesignTokensTests` (9 tests): exact spacing values + monotonic increase, corner radii in ascending order, brand primary/gold RGB ranges, opacity valid range + dark > light, animation slots exist, semantic colors pairwise distinct
+  - [x] All tests pass, `xcodebuild test` green
 
-- [x] **视觉重设计 Phase 1（2026-04-01）**：
-  - [x] `docs/design.md` — 11 个改进方向的完整设计文档
-  - [x] `DesignTokens.swift` — 集中设计系统（Brand 主色深蓝+金黄、语义色、暖灰中性色、七档排版、间距、圆角、动画预设、阴影）
-  - [x] 17 个视图文件重设计：MessageRowView、ChatTabView、ChatToolbarView、ToolPartView、PatchPartView、PermissionCardView、QuestionCardView、SessionListView、ContextUsageView、StreamingReasoningView、TodoListInlineView、FileTreeView、FileContentView、SettingsTabView、SplitSidebarView、ContentView、L10n
-  - [x] 消息方向 B（无气泡 + 4pt 左侧色条），AI 消息纯文字无容器
-  - [x] Composer 重设计（mic 内嵌左侧、send/stop 右侧方形按钮、输入框无描边）
-  - [x] Toolbar model+agent 合并为配置 sheet，Rename 降为 .secondary
-  - [x] 卡片语言统一：信息卡片去描边、操作卡片左侧色条
-  - [x] Context ring 缩小 18pt + ≥85% 脉冲动画
-  - [x] 所有新增 L10n key（configureTitle/Model/Agent/NoAgents）含中英翻译
-  - [x] Gemini subagent 误操作修复（PathNormalizer、APIConstants/StorageKeys 恢复、hardcoded strings）
+- [x] **Visual redesign Phase 1 (2026-04-01)**:
+  - [x] `docs/design.md` — complete design doc covering 11 improvement directions
+  - [x] `DesignTokens.swift` — centralized design system (Brand primary dark blue + gold, semantic colors, warm gray neutrals, seven type sizes, spacing, corner radii, animation presets, shadows)
+  - [x] 17 view files redesigned: MessageRowView, ChatTabView, ChatToolbarView, ToolPartView, PatchPartView, PermissionCardView, QuestionCardView, SessionListView, ContextUsageView, StreamingReasoningView, TodoListInlineView, FileTreeView, FileContentView, SettingsTabView, SplitSidebarView, ContentView, L10n
+  - [x] Message direction B (no bubbles + 4pt left color bar), AI messages as plain text with no container
+  - [x] Composer redesign (mic embedded left, send/stop square buttons right, borderless input field)
+  - [x] Toolbar model+agent merged into a config sheet, Rename demoted to .secondary
+  - [x] Unified card language: info cards lose borders, action cards gain a left color bar
+  - [x] Context ring shrunk 18pt + pulsing animation at ≥85%
+  - [x] All new L10n keys (configureTitle/Model/Agent/NoAgents) carry en/zh translations
+  - [x] Fixed Gemini subagent misoperations (PathNormalizer, APIConstants/StorageKeys restoration, hardcoded strings)
   - **Commit**: `b6ed2ac` — feat: redesign visual design system — design tokens, card language, composer, toolbar
-  - **尚未实现的进阶项**（P1: session 摘要预览、子 session 连接线、session 切换淡入淡出、permission 滑入动画、消息出现动画；P2: tool 卡片 spring 展开、Logo 空状态呼吸动画、深色 Logo 资源）
+  - **Advanced items not yet implemented** (P1: session summary preview, child session connector lines, session-switch crossfade, permission slide-in animation, message appearance animation; P2: tool card spring expansion, logo empty-state breathing animation, dark logo asset)
 
-- [x] **避免 session 切换时在 view update 内同步改状态（2026-03-30）**：
-  - [x] 将 `ChatTabView` 中响应 `currentSessionID` 变化的草稿同步与滚动状态重置改为 `Task { @MainActor in }`
-  - [x] 降低运行时 `Modifying state during view update` 告警概率，不改变现有 session 切换行为
+- [x] **Avoid mutating state synchronously during view updates on session switch (2026-03-30)**:
+  - [x] Draft syncing and scroll state resets reacting to `currentSessionID` changes in `ChatTabView` moved into `Task { @MainActor in }`
+  - [x] Lowers the odds of the runtime `Modifying state during view update` warning without changing existing session switch behavior
 
-- [x] **GLM-5-turbo 预设切换到 GLM-5.1（2026-05-03）**：
-  - [x] 将模型预设显示名从 `GLM-5-turbo` 更新为 `GLM-5.1`，modelID 从 `glm-5-turbo` 更新为 `glm-5.1`
-  - [x] `canonicalModelPresetID` 遗留迁移：`glm-5-turbo` 和 `glm-5.1` 均映射到新的 `glm-5.1`
-  - [x] 同步更新 PRD、RFC 文档中的模型引用
+- [x] **GLM-5-turbo preset switched to GLM-5.1 (2026-05-03)**:
+  - [x] Model preset display name updated from `GLM-5-turbo` to `GLM-5.1`, modelID from `glm-5-turbo` to `glm-5.1`
+  - [x] `canonicalModelPresetID` legacy migration: both `glm-5-turbo` and `glm-5.1` map to the new `glm-5.1`
+  - [x] Model references in the PRD and RFC updated in step
 
-- [x] **GLM-5.1 预设切回 GLM-5-turbo（2026-03-30）**：
-  - [x] 将模型预设显示名从 `GLM-5.1` 更新为 `GLM-5-turbo`
-  - [x] 将底层 model ID 从 `glm-5.1` 更新为 `glm-5-turbo`
-  - [x] 为已保存旧 `glm-5.1` 选择的 session 增加兼容映射，避免 selector 回退到其他模型
+- [x] **GLM-5.1 preset switched back to GLM-5-turbo (2026-03-30)**:
+  - [x] Model preset display name updated from `GLM-5.1` to `GLM-5-turbo`
+  - [x] Underlying model ID updated from `glm-5.1` to `glm-5-turbo`
+  - [x] Added a compatibility mapping for sessions with a saved `glm-5.1` selection so the selector does not fall back to another model
 
-- [x] **Chat Composer 视觉紧凑化与 Return 键行为调整（2026-03-28）**：
-  - [x] 视觉：将 composer 最小高度从 44pt 继续压至 32pt，并将输入框容器/底部栏的垂直 padding 收紧到 5pt/6pt，使输入区高度更接近右侧圆形按钮，不再浪费底部空间
-  - [x] 行为：修改 `ChatComposerTextView` 使 Return 键（含外接键盘 Enter）始终插入换行而非发送，并将键盘 Return 键类型从 `.send` 改回 `.default`
-  - [x] 安全：保留 IME marked text 组合态安全，确保输入法确认操作不触发非预期行为；发送仅通过右侧圆形箭头按钮触发
-  - [x] 测试/文档：更新 `ChatComposerKeyAction` 单元测试以匹配新行为，并同步更新 README 关于 iPad 键盘行为的说明
+- [x] **Chat Composer visual compaction and Return key behavior change (2026-03-28)**:
+  - [x] Visual: composer minimum height squeezed further from 44pt to 32pt, vertical padding of the input container/bottom bar tightened to 5pt/6pt, bringing the input area's height closer to the round buttons on the right and wasting less bottom space
+  - [x] Behavior: `ChatComposerTextView` modified so the Return key (including Enter on an external keyboard) always inserts a newline instead of sending, and the keyboard Return key type reverted from `.send` to `.default`
+  - [x] Safety: IME marked-text composition safety preserved so input method confirmations never trigger unexpected actions; sending happens only via the round arrow button on the right
+  - [x] Tests/docs: `ChatComposerKeyAction` unit tests updated to match the new behavior, and the README's iPad keyboard notes updated in step
 
-- [x] **iPad 中文输入法 + 物理键盘 Enter/Shift+Enter 提前发送修复（2026-03-28）**：
-  - [x] 根因：Chat composer 使用 `TextField(axis: .vertical)` 的 `.onSubmit`，并额外挂了发送按钮的 `.keyboardShortcut(.return)`；在 iPad 外接键盘场景下，这两条 Return 路径会在中文输入法仍处于 marked text/composition 时抢先触发发送
-  - [x] 修复：将 chat 输入框替换为一个局部 `UITextView` bridge，在 delegate 中按 `markedTextRange` 区分 IME 组合态；普通 `Enter` 发送，`Shift+Enter` 插入换行，并移除裸 `Return` keyboard shortcut
-  - [x] 测试/文档：新增 composer key decision 单测，更新 chat 输入框 UI smoke 为 `chat-input` accessibility identifier，并在 README 记录 iPad 外接键盘的 Enter/Shift+Enter 语义
+- [x] **iPad Chinese IME + physical keyboard Enter/Shift+Enter premature send fix (2026-03-28)**:
+  - [x] Root cause: the Chat composer used `TextField(axis: .vertical)`'s `.onSubmit` plus the send button's `.keyboardShortcut(.return)`; with an iPad external keyboard, both Return paths fired send prematurely while the Chinese IME was still in marked text/composition
+  - [x] Fix: the chat input box was replaced with a local `UITextView` bridge whose delegate distinguishes IME composition by `markedTextRange`; plain `Enter` sends, `Shift+Enter` inserts a newline, and the bare `Return` keyboard shortcut was removed
+  - [x] Tests/docs: added composer key decision unit tests, updated the chat input UI smoke to the `chat-input` accessibility identifier, and recorded the iPad external keyboard Enter/Shift+Enter semantics in the README
 
-- [x] **iPad 新建 session 后 sidebar 重复 entry 修复（2026-03-28）**：
-  - [x] 根因：`createSession()` / `forkSession()` 的 optimistic `sessions.insert(..., at: 0)` 与 SSE `session.updated` 的写入路径都能把同一个 `session.id` 再塞进本地 `sessions`；iPad sidebar 常驻可见，所以重复 row 和双 selected 会立刻暴露；切到别的 session 后 `refreshSessions()` 用服务端 canonical 列表整体覆盖，本地重复随之消失
-  - [x] 修复：在 `AppState` 增加按 `session.id` 去重的 `upsertSession()` helper，并统一用于 `createSession()`、`forkSession()`、`session.updated`，确保本地 session 状态始终满足单 ID 唯一
-  - [x] 测试：新增 create/fork duplicate collapse 回归测试，以及 `session.updated` 收敛重复 session 的状态流测试；验证 `xcodebuild build -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'generic/platform=iOS Simulator'` 与 `xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4'` 全部通过
+- [x] **iPad duplicate sidebar entry after creating a session fix (2026-03-28)**:
+  - [x] Root cause: the optimistic `sessions.insert(..., at: 0)` in `createSession()` / `forkSession()` and the SSE `session.updated` write path could both push the same `session.id` into local `sessions`; the iPad sidebar is permanently visible, so duplicate rows and double selection showed up immediately; after switching to another session, `refreshSessions()` overwrote everything with the server's canonical list and the local duplicates disappeared
+  - [x] Fix: added a `upsertSession()` helper to `AppState` that dedups by `session.id`, used uniformly by `createSession()`, `forkSession()`, and `session.updated`, keeping local session state single-ID unique at all times
+  - [x] Tests: added create/fork duplicate collapse regression tests and a state-flow test for `session.updated` converging duplicate sessions; verified `xcodebuild build -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'generic/platform=iOS Simulator'` and `xcodebuild test -project "OpenCodeClient.xcodeproj" -scheme "OpenCodeClient" -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4'` all pass
 
-- [x] **GLM-5-Turbo 预设切换到 GLM-5.1（2026-03-27）**：
-  - [x] 将模型预设显示名从 `GLM-5-Turbo` 更新为 `GLM-5.1`
-  - [x] 将底层 model ID 从 `glm-5-turbo` 更新为 `glm-5.1`
+- [x] **GLM-5-Turbo preset switched to GLM-5.1 (2026-03-27)**:
+  - [x] Model preset display name updated from `GLM-5-Turbo` to `GLM-5.1`
+  - [x] Underlying model ID updated from `glm-5-turbo` to `glm-5.1`
 
-- [x] **GLM-5 预设切换到 GLM-5-Turbo（2026-03-20）**：
-  - [x] 将模型预设显示名从 `GLM-5` 更新为 `GLM-5-Turbo`
-  - [x] 将底层 model ID 从 `glm-5` 更新为 `glm-5-turbo`
+- [x] **GLM-5 preset switched to GLM-5-Turbo (2026-03-20)**:
+  - [x] Model preset display name updated from `GLM-5` to `GLM-5-Turbo`
+  - [x] Underlying model ID updated from `glm-5` to `glm-5-turbo`
 
-- [x] **默认模型切换到 GPT-5.4（2026-03-19）**：
-  - [x] 默认发送模型从 `zai-coding-plan/glm-5` 切换为 `openai/gpt-5.4`
-  - [x] 新会话和未保存过模型选择的默认发送路径直接落到 GPT-5.4
+- [x] **Default model switched to GPT-5.4 (2026-03-19)**:
+  - [x] Default send model switched from `zai-coding-plan/glm-5` to `openai/gpt-5.4`
+  - [x] New sessions and the default send path with no saved model choice land directly on GPT-5.4
 
-- [x] **oh-my-opencode 默认 agent 与 Gemini model ID 修正（2026-03-17）**：
-  - [x] 全局 `oh-my-opencode.json` 默认 agent 从 GLM-5 切换为 sisyphus ultraworker（Claude Opus 4.6）
-  - [x] Gemini model ID 修正：`google/gemini-3-flash` -> `google/gemini-3-flash-preview`，`google/gemini-3-pro` -> `google/gemini-3.1-pro-preview`
+- [x] **oh-my-opencode default agent and Gemini model ID fix (2026-03-17)**:
+  - [x] The global `oh-my-opencode.json` default agent switched from GLM-5 to sisyphus ultraworker (Claude Opus 4.6)
+  - [x] Gemini model ID fix: `google/gemini-3-flash` -> `google/gemini-3-flash-preview`, `google/gemini-3-pro` -> `google/gemini-3.1-pro-preview`
 
-- [x] **iPhone 左缘右滑打开 Session List（2026-03-19）**：
-  - [x] 实现：`ChatTabView` 左侧新增窄透明 edge target，仅 compact width 启用；从左边缘向右拖拽满足阈值时走与 toolbar 相同的 `showSessionList = true`
-  - [x] 约束：要求起点贴左边缘、横向位移足够、纵向漂移有限，避免把普通纵向滚动误判成打开 session list
-  - [x] 测试：新增 `SessionListEdgeSwipeBehaviorTests`，覆盖合法左缘右滑、非左缘起手、以及过度纵向拖拽三种情况
+- [x] **iPhone left-edge swipe to open Session List (2026-03-19)**:
+  - [x] Implementation: a narrow transparent edge target added to the left of `ChatTabView`, enabled only at compact width; dragging right from the left edge past the threshold triggers the same `showSessionList = true` as the toolbar
+  - [x] Constraints: the start point must hug the left edge, horizontal displacement must be sufficient, and vertical drift limited, so ordinary vertical scrolling is not misread as opening the session list
+  - [x] Tests: added `SessionListEdgeSwipeBehaviorTests` covering valid left-edge right swipe, non-left-edge start, and excessive vertical drag
 
-- [x] **Model selection 切换 session 后显示错误模型修复（2026-03-14）**：
-  - [x] 根因：`inferAndStoreModelForCurrentSessionIfMissing()` 有 `guard selectedModelIDBySessionID[sessionID] == nil` 前置条件，当 persistence 有旧值时直接跳过推断，导致 `selectedModelIndex` 保留上一个 session 的值
-  - [x] 修复：重命名为 `syncModelFromMessageHistory()`，移除 persistence 非空即跳过的 guard，每次加载完 messages 后都从消息历史推断实际模型并更新选择；`applySavedModelForCurrentSession()` 保留为同步快速路径
+- [x] **Model selection showing the wrong model after switching sessions fix (2026-03-14)**:
+  - [x] Root cause: `inferAndStoreModelForCurrentSessionIfMissing()` had a `guard selectedModelIDBySessionID[sessionID] == nil` precondition, so when persistence held an old value it skipped inference, leaving `selectedModelIndex` holding the previous session's value
+  - [x] Fix: renamed to `syncModelFromMessageHistory()`, removed the skip-if-persistence-nonempty guard, and after every message load it infers the actual model from message history and updates the selection; `applySavedModelForCurrentSession()` stays as the synchronous fast path
 
-- [x] **Context ring 常驻可见 + AI 处理中保持数值（2026-03-14）**：
-  - [x] 根因 1：`ChatTabView` 在 `state.isBusy` 时向 `.navigationBarTrailing` 注入 `ProgressView`，视觉上遮盖 ring → 删除该 ProgressView block
-  - [x] 根因 2：AI 处理中服务器创建新 assistant 消息带 `tokens: {total: 0}`，旧过滤 `tokens != nil` 命中该空消息导致 ring 显示 0% → 改为 `tokens != nil && tokens.total > 0`，跳过空 token 消息
-  - [x] 缓存机制：`AppState._cachedContextUsage`（`@ObservationIgnored`）缓存最后一次有效 snapshot；messages 加载中/provider config 缺失时返回缓存值（同 session 限定）；切换 session 时清缓存
+- [x] **Context ring always visible + value held while the AI processes (2026-03-14)**:
+  - [x] Root cause 1: `ChatTabView` injected a `ProgressView` into `.navigationBarTrailing` when `state.isBusy`, visually covering the ring → that ProgressView block was deleted
+  - [x] Root cause 2: while the AI processes, the server creates a new assistant message carrying `tokens: {total: 0}`, and the old `tokens != nil` filter matched that empty message, making the ring show 0% → changed to `tokens != nil && tokens.total > 0`, skipping empty-token messages
+  - [x] Caching: `AppState._cachedContextUsage` (`@ObservationIgnored`) caches the last valid snapshot; returns the cached value while messages are loading or provider config is missing (same-session only); the cache clears on session switch
 
-- [x] **语音转写 partial transcript 实时展示（2026-03-11）**：
-  - [x] AIBuildersAudioClient：`transcribe` 新增可选 `onPartialTranscript` 回调，`streamPCMOverRealtimeWebSocket` 收到 `transcript_delta` 时累积并回调
-  - [x] AppState.transcribeAudio：透传 onPartialTranscript
-  - [x] ChatTabView：转写过程中将 partial 实时写入输入框，完成后用 final 替换；失败时恢复 prefix
+- [x] **Live display of speech partial transcripts (2026-03-11)**:
+  - [x] AIBuildersAudioClient: `transcribe` gained an optional `onPartialTranscript` callback; `streamPCMOverRealtimeWebSocket` accumulates and calls back on `transcript_delta`
+  - [x] AppState.transcribeAudio: passes onPartialTranscript through
+  - [x] ChatTabView: during transcription the partial is written live into the input box, replaced by the final on completion; on failure the prefix is restored
 
-- [x] **Markdown 大文件/长行崩溃修复（2026-03-11）**：
-  - [x] 根因：MarkdownUI 对超长单行（如 transcript 段落 3000+ 字符）或大文件会 freeze/crash（GH #426、#396）
-  - [x] 修复：FileContentView 在渲染前检测 `maxLineLength > 1500` 或 `totalLength > 60KB`，满足时直接用 RawTextView 跳过 MarkdownUI
-  - [x] MarkdownPreviewView 内保留二次 fallback；loadContent 与 onAppear 保留调试日志
+- [x] **Markdown large file/long line crash fix (2026-03-11)**:
+  - [x] Root cause: MarkdownUI freezes/crashes on very long single lines (such as transcript paragraphs of 3000+ characters) or large files (GH #426, #396)
+  - [x] Fix: FileContentView checks `maxLineLength > 1500` or `totalLength > 60KB` before rendering and uses RawTextView to skip MarkdownUI when either holds
+  - [x] A second fallback kept inside MarkdownPreviewView; debug logs kept in loadContent and onAppear
 
-- [x] **Realtime Speech 语音转写修复（2026-03-11）**：
-  - [x] 根因 1：API URL 构造错误——`URL(string: "/v1/...", relativeTo: base)` 会替换 base 的 path，导致 `https://space.ai-builders.com/backend` 请求到 `/v1/...` 而非 `/backend/v1/...`
-  - [x] 修复：`buildAPIURL` 确保 base path 以 `/` 结尾，使相对路径正确追加；session 创建、testConnection 均改用该 helper
-  - [x] 根因 2：m4a 转 PCM 失败——`AVAudioConverter` 对 AAC/m4a 有已知问题，抛出 `nilError`
-  - [x] 修复：改用 `ExtAudioFile` API 读取并转换，直接输出 24kHz 16-bit mono PCM
-  - [x] 新增 `buildAPIURLPreservesMountPath`、`buildAPIURLWithoutMountPath` 单元测试
-  - [x] 增加 SpeechProfile 调试日志（session POST url、ws_url、websocket connect、各步骤失败详情）
+- [x] **Realtime Speech transcription fix (2026-03-11)**:
+  - [x] Root cause 1: API URL construction error — `URL(string: "/v1/...", relativeTo: base)` replaces the base's path, so `https://space.ai-builders.com/backend` requested `/v1/...` instead of `/backend/v1/...`
+  - [x] Fix: `buildAPIURL` ensures the base path ends with `/` so relative paths append correctly; session creation and testConnection both switched to this helper
+  - [x] Root cause 2: m4a to PCM conversion failed — `AVAudioConverter` has known problems with AAC/m4a and threw `nilError`
+  - [x] Fix: switched to the `ExtAudioFile` API for reading and conversion, outputting 24kHz 16-bit mono PCM directly
+  - [x] Added `buildAPIURLPreservesMountPath` and `buildAPIURLWithoutMountPath` unit tests
+  - [x] Added SpeechProfile debug logs (session POST url, ws_url, websocket connect, per-step failure details)
 
-- [x] **Session 树状层级视图（2026-03-03）**：
-  - [x] 背景：agent 派出 background sub-agent 时会创建子 session（`Session.parentID` 指向父 session），此前所有 session 平级显示导致列表 cluttered
-  - [x] 实现：`SessionNode` 树结构 + `AppState.buildSessionTree(from:)` 静态方法，按 `parentID` 递归构建层级；孤儿 session（parentID 指向不存在的 session）自动提升为根节点
-  - [x] UI：子 session 缩进（depth × 24pt）、字号缩小（`.subheadline`）、颜色变淡（`.secondary`）；父 session 左侧显示 chevron 折叠/展开按钮
-  - [x] `expandedSessionIDs: Set<String>` 跟踪展开状态（默认收起），`toggleSessionExpanded()` 切换
-  - [x] iPhone（`SessionListView`）和 iPad（`SplitSidebarView.SessionsSidebarList`）同步更新为树状递归渲染
-  - [x] 单元测试：7 个测试覆盖层级构建、孤儿处理、排序、多级嵌套、空输入、归档过滤、折叠状态切换
+- [x] **Session tree hierarchy view (2026-03-03)**:
+  - [x] Background: when an agent dispatches a background sub-agent it creates a child session (`Session.parentID` pointing at the parent), and showing all sessions flat cluttered the list
+  - [x] Implementation: a `SessionNode` tree structure + the `AppState.buildSessionTree(from:)` static method, building the hierarchy recursively by `parentID`; orphan sessions (parentID pointing at a nonexistent session) are automatically promoted to root nodes
+  - [x] UI: child sessions indent (depth × 24pt), shrink font (`.subheadline`), fade color (`.secondary`); parent sessions show a chevron collapse/expand button on the left
+  - [x] `expandedSessionIDs: Set<String>` tracks expansion state (collapsed by default), toggled by `toggleSessionExpanded()`
+  - [x] iPhone (`SessionListView`) and iPad (`SplitSidebarView.SessionsSidebarList`) both updated to tree-recursive rendering
+  - [x] Unit tests: 7 tests covering hierarchy building, orphan handling, sorting, multi-level nesting, empty input, archive filtering, and collapse state toggling
 
-- [x] **Session 创建仅限 Server default（2026-02-25）**：
-  - [x] 根因：`POST /session` 不支持传 directory，新 session 始终落在 server 的 current project；iOS Project 选择器只过滤列表，不改变创建目标
-  - [x] 实现：仅 Server default 时提供创建按钮；选具体 project 时新建按钮置灰 + info 图标提示去服务器端切换
-  - [x] `canCreateSession`、`chatCreateDisabledHint`；ChatToolbarView、SessionListView 置灰 + info
-  - [x] 文档：lessons §16、RFC §4.3.1、PRD §4.4.3
-- [x] **Project 选择功能（2026-02-25 完成）**：
-  - [x] PRD/RFC 更新：添加 Project (Workspace) 设计
-  - [x] 实现 `Project` 数据模型、`APIClient.projects()`、`sessions(directory:limit:)`
-  - [x] 更新 `AppState`：projects、selectedProjectWorktree、customProjectPath、effectiveProjectDirectory
-  - [x] Settings UI：Project Picker（Server default / 项目列表 / Custom path）
-  - [x] 单元测试：Project 解码、effectiveProjectDirectory 逻辑；修复 SessionDeletionSelectionTests.makeSession 缺 archived 参数
-  - [x] 解决「手机端只能看两周前 sessions」根因：Web 与 iOS 默认看的 project 不同，现支持按 project 过滤
-- [x] **Agent 选择功能（2026-02-21 完成）**：
-  - [x] RFC/PRD 更新：添加 Agent 数据模型、API、UI 设计（v0.2 / RFC-002）
-  - [x] 实现 `AgentInfo` 数据模型（含 mode 过滤：primary/all 显示，subagent 隐藏）
-  - [x] 实现 `APIClient.agents()` 方法
-  - [x] 更新 `AppState`：添加 agents 列表（prefill 5 个默认 agent）、selectedAgentIndex、loadAgents()
-  - [x] 更新模型列表：GLM-5（默认）/ Opus 4.6 / Sonnet 4.6 / GPT-5.3 Codex / GPT-5.2 / Gemini 3.1 Pro / Gemini 3 Flash
-  - [x] 更新 `ChatToolbarView`：chip 横向滚动改为下拉列表（Model + Agent）
-  - [x] 更新 `promptAsync`：传递选中的 agent
-  - [x] 单元测试：Agent API 解码 + mode 过滤测试
-  - [x] OpenCode-Builder 设为默认 agent
-- [x] **渲染性能优化 1/3（行级去全局状态订阅）**：`MessageRowView/ToolPartView/PatchPartView` 移除 `@Bindable AppState` 直连，改为最小必要数据 + 文件打开回调，降低长会话下无关状态变更触发的整页重算
-- [x] **渲染性能优化 2/3（Scroll Anchor 轻量化）**：`scrollAnchor` 从“全量拼接所有 message/streaming 字符串”改为基于 `messageCount + lastMessageSignature + streaming chars` 的 O(1)/小常量签名，避免长会话下每次状态变化都全量遍历
-- [x] **渲染性能优化 3/3（Markdown 快速路径）**：对纯文本消息走 `Text` 渲染，仅在检测到 Markdown 语法特征时使用 `MarkdownUI`，降低长会话中大量普通文本消息的解析与布局开销
-- [x] **消息分段加载（3 轮对话）**：默认仅拉取最近 3 轮（6 条）message，聊天页顶部显示“下拉加载更多历史消息”，每次下拉再扩展 3 轮并重新拉取
-- [x] **SSH Tunnel 远程访问**（Citadel 集成完成）：
-  - [x] SSHKeyManager：Ed25519 密钥生成/存储（Keychain）/公钥显示
-  - [x] SSHTunnelManager：连接/断开/状态
-  - [x] SSHTunnelConfig 数据模型
-  - [x] Settings UI：SSH Tunnel 配置区域
-  - [x] AppState 集成：SSH 连接状态
-  - [x] 单元测试
-  - [x] 添加 Citadel 依赖（SPM）
-  - [x] 实现实际 SSH 连接逻辑（本地 127.0.0.1:4096 → SSH DirectTCPIP → VPS 127.0.0.1:remotePort）
-  - [x] 修复 project deployment target（避免 UITests 无法在 simulator 上运行）
-- [x] **UI 改进**（低优先级）：busy 状态用菊花代替圆形按钮
-- [x] **权限请求交互修复**：支持 Allow once / Allow always / Reject，并确保 POST `/session/:id/permissions/:permissionID` 带 body `{"response":...}`
-- [x] **SSH Public Key UI**：未连接时也应可生成/查看/复制公钥（避免 sheet 内按钮全灰）
-- [x] **Permission 卡片位置**：permission 对话卡片应渲染在消息流底部（默认滚动到最底可见），并位于 activity/thinking 行的上方
-- [x] **Activity 计时持久化**：计时从消息 `time.created/time.completed` 推导，避免重启 app/切换 session 后从 0 重置
-- [x] **Activity/Busy 状态抖动**：session.status 轮询结果不覆盖近期 SSE；activity 文案更新做 2.5s debounce + debug log
-- [x] **Per-turn Activity 行**：每个 user turn 的末尾保留 completed activity 行（显示耗时）；当前 in-progress turn 在底部显示 running activity 行
-- [x] **iPhone 发热明显热点修复（滚动）**：移除 running activity 每秒计时对 `scrollAnchor` 的影响，避免每秒触发 `scrollTo("bottom")` 动画
-- [x] **全量 Code Review 文档重写（2026-02-13）**：删除并重写 `docs/code_review.md`，聚焦架构/性能/安全的明显问题与优先级
-- [x] **SSH TOFU 安全基线**：替换 `acceptAnything`，首次连接信任 host key，后续强校验并支持重置信任主机
-- [x] **SSE 主通道收敛**：移除 busy 常驻轮询，改为 SSE 重连后一次性 bootstrap 同步（messages + permissions）
-- [x] **AppState 重构（PermissionController）**：权限事件解析/回写与 pending 映射从 AppState 抽离，补行为测试
-- [x] **AppState 重构（Iteration C - ActivityTracker）**：activity 状态推导/防抖/时长规则抽离，补行为测试
-- [x] **Activity Row 提前 completed 修复**：当 session.status 变 idle 但仍有 running/pending tool 或 streaming 时保持 running，不提前停表
-- [x] **SSH UX 完整化**：Settings 增加「Copy Public Key」、setup guide 与灰字提示（启用 SSH 后需点上方 Test Connection）
-- [x] **Session 快速切换竞态修复（全量拉取）**：对 `loadMessages/loadSessionDiff` 增加 requestedSessionID 校验，丢弃过期响应，避免 A→B→A 后被旧 B 结果覆盖
-- [x] **Activity Row 提前 completed（二次）修复**：`running/completed` 判定改为“当前 turn + busy 状态优先”，不再依赖 `completedAt == nil`，避免仍在运行时误显示 completed
-- [x] **SSH UX 修复**：默认 Server Address 改为 `127.0.0.1:4096`；开启 SSH 后配置变更自动重连；View Public Key 在 enabled 场景不再空白；`Set Server Address` CTA 改为显式蓝色按钮
-- [x] **Settings 关闭按钮一致性**：sheet 右上角改为英文 `Close`，避免英文界面出现中文“关闭”
-- [x] **Localization 规划**：新增 `docs/features/localization/research.md`（原 `docs/dev_localization.md`），给出 en/zh-Hans 双语落地路线与分批迁移计划
-- [x] **SSH 前后台自动恢复修复**：进入后台时主动断开 SSH/SSE；回前台恢复时若健康检查失败，强制重建一次 SSH tunnel 再 refresh
-- [x] **SSE 重连状态补偿**：SSE bootstrap 与 `server.connected` 事件时补拉 `/session/status`，避免仅补消息不补状态
-- [x] **Busy 卡死/Abort 无效感修复**：poll 合并时对“缺失于 poll 结果但本地仍 busy/retry”的会话降级为 idle，并同步清理 streaming；abort 后立即补拉状态+消息
-- [x] **Todo 渲染兼容性修复（OpenCode 升级）**：兼容 `TodoItem` 新旧字段（`status/priority/id` 与 legacy `completed`），并修复 tool state `metadata.todos`/`output(JSON)` 解析；`metadata.input` 非字符串时不再导致 todo 卡片空白
-- [x] **SSH runtime crash 防护（NIO channel state）**：修复 `SSHTunnelManager` 中跨线程调用 channel/context close 的并发问题（统一切回 NIO eventLoop 执行），避免 `Sent channel window adjust on channel in invalid state` 触发 fatal
-- [x] **SSH Public Key 交互补强（二次）**：`View Public Key` 改为始终走 `generateOrGetPublicKey()`（不再优先读可能为空的缓存值），并将 `Copy Public Key` + `View Public Key` 合并为同一行按钮，减少 Settings 区域占用
-- [x] **Tailscale / Server Address UX（2026-03-01）**：ATS 例外为 `ts.net` 添加 `NSIncludesSubdomains`；`correctMalformedServerURL` 修正 `host://host:port` 畸形格式；`ensureServerURLHasScheme` 无 http/https 时自动补 `http://`；修正时机改为 lose focus（`@FocusState` + `onChange`），避免每字符改写；Server Address 键盘 `submitLabel(.done)` 显示 Done
+- [x] **Session creation restricted to Server default (2026-02-25)**:
+  - [x] Root cause: `POST /session` does not accept a directory, so new sessions always land in the server's current project; the iOS project picker only filters the list and does not change the creation target
+  - [x] Implementation: the create button appears only for Server default; with a specific project selected, the create button grays out + an info icon points to switching on the server side
+  - [x] `canCreateSession`, `chatCreateDisabledHint`; ChatToolbarView and SessionListView gray out + info
+  - [x] Docs: lessons §16, RFC §4.3.1, PRD §4.4.3
+- [x] **Project selection (completed 2026-02-25)**:
+  - [x] PRD/RFC update: added the Project (Workspace) design
+  - [x] Implemented the `Project` data model, `APIClient.projects()`, `sessions(directory:limit:)`
+  - [x] Updated `AppState`: projects, selectedProjectWorktree, customProjectPath, effectiveProjectDirectory
+  - [x] Settings UI: Project Picker (Server default / project list / Custom path)
+  - [x] Unit tests: Project decoding, effectiveProjectDirectory logic; fixed `SessionDeletionSelectionTests.makeSession` missing the archived parameter
+  - [x] Resolved the root cause of "the phone only shows sessions from two weeks ago": web and iOS were looking at different default projects; filtering by project is now supported
+- [x] **Agent selection (completed 2026-02-21)**:
+  - [x] RFC/PRD update: added the Agent data model, API, and UI design (v0.2 / RFC-002)
+  - [x] Implemented the `AgentInfo` data model (with mode filtering: primary/all shown, subagent hidden)
+  - [x] Implemented the `APIClient.agents()` method
+  - [x] Updated `AppState`: added the agents list (prefill of 5 default agents), selectedAgentIndex, loadAgents()
+  - [x] Updated the model list: GLM-5 (default) / Opus 4.6 / Sonnet 4.6 / GPT-5.3 Codex / GPT-5.2 / Gemini 3.1 Pro / Gemini 3 Flash
+  - [x] Updated `ChatToolbarView`: chip horizontal scroll became a dropdown list (Model + Agent)
+  - [x] Updated `promptAsync`: passes the selected agent
+  - [x] Unit tests: Agent API decoding + mode filtering tests
+  - [x] OpenCode-Builder set as the default agent
+- [x] **Rendering performance 1/3 (row-level removal of global state subscriptions)**: `MessageRowView/ToolPartView/PatchPartView` dropped the direct `@Bindable AppState` connection in favor of minimal necessary data + a file-open callback, reducing full-page recomputation triggered by unrelated state changes in long sessions
+- [x] **Rendering performance 2/3 (Scroll Anchor slimming)**: `scrollAnchor` changed from "concatenating all message/streaming strings" to an O(1)/small-constant signature based on `messageCount + lastMessageSignature + streaming chars`, avoiding a full traversal on every state change in long sessions
+- [x] **Rendering performance 3/3 (Markdown fast path)**: plain text messages render via `Text`, with `MarkdownUI` used only when Markdown syntax features are detected, cutting parse and layout cost for the many plain text messages in long sessions
+- [x] **Message segmented loading (3 turns)**: by default only the most recent 3 turns (6 messages) are fetched; the top of the chat page shows "pull to load more history", and each pull extends by 3 turns and refetches
+- [x] **SSH Tunnel remote access** (Citadel integration complete):
+  - [x] SSHKeyManager: Ed25519 key generation/storage (Keychain)/public key display
+  - [x] SSHTunnelManager: connect/disconnect/status
+  - [x] SSHTunnelConfig data model
+  - [x] Settings UI: SSH Tunnel configuration area
+  - [x] AppState integration: SSH connection status
+  - [x] Unit tests
+  - [x] Added the Citadel dependency (SPM)
+  - [x] Implemented the actual SSH connection logic (local 127.0.0.1:4096 → SSH DirectTCPIP → VPS 127.0.0.1:remotePort)
+  - [x] Fixed the project deployment target (so UITests can run on the simulator)
+- [x] **UI improvement** (low priority): busy state uses a spinner instead of a round button
+- [x] **Permission request interaction fix**: supports Allow once / Allow always / Reject, and ensures POST `/session/:id/permissions/:permissionID` carries the body `{"response":...}`
+- [x] **SSH Public Key UI**: generate/view/copy the public key should work even when not connected (avoiding an all-gray button sheet)
+- [x] **Permission card placement**: the permission dialog card renders at the bottom of the message stream (scrolled to bottom by default) and above the activity/thinking rows
+- [x] **Activity timing persistence**: timings derive from message `time.created/time.completed`, avoiding a reset to 0 after app restart or session switch
+- [x] **Activity/Busy state flapping**: session.status poll results do not override recent SSE; activity text updates get a 2.5s debounce + debug log
+- [x] **Per-turn Activity row**: each user turn keeps its completed activity row at the end (showing elapsed time); the current in-progress turn shows a running activity row at the bottom
+- [x] **iPhone noticeable heat hotspot fix (scrolling)**: removed the running activity per-second timer's influence on `scrollAnchor`, avoiding a per-second `scrollTo("bottom")` animation
+- [x] **Full Code Review doc rewrite (2026-02-13)**: deleted and rewrote `docs/code_review.md`, focusing on obvious architecture/performance/security issues and priorities
+- [x] **SSH TOFU security baseline**: replaced `acceptAnything`; the host key is trusted on first connect, strictly verified afterwards, with support for resetting trusted hosts
+- [x] **SSE main channel convergence**: removed constant busy polling, replaced by a one-shot bootstrap sync (messages + permissions) after SSE reconnect
+- [x] **AppState refactor (PermissionController)**: permission event parsing/write-back and the pending map extracted from AppState, with behavior tests added
+- [x] **AppState refactor (Iteration C - ActivityTracker)**: activity state derivation/debounce/duration rules extracted, with behavior tests added
+- [x] **Activity Row early-completed fix**: stays running when session.status goes idle but tools are still running/pending or streaming continues, so the clock does not stop early
+- [x] **SSH UX completeness**: Settings gained "Copy Public Key", a setup guide, and gray hint text (after enabling SSH you must tap Test Connection above)
+- [x] **Session rapid-switch race fix (full fetch)**: added requestedSessionID validation to `loadMessages/loadSessionDiff`, discarding stale responses so A→B→A is not overwritten by old B results
+- [x] **Activity Row early-completed (second) fix**: the `running/completed` decision became "current turn + busy state first", no longer relying on `completedAt == nil`, avoiding a false completed while still running
+- [x] **SSH UX fix**: default Server Address changed to `127.0.0.1:4096`; config changes auto-reconnect after SSH is enabled; View Public Key no longer blank in the enabled scenario; the `Set Server Address` CTA became an explicit blue button
+- [x] **Settings close button consistency**: the sheet's top-right button is now English `Close`, avoiding the former Chinese close label appearing in the English UI
+- [x] **Localization planning**: added `docs/features/localization/research.md` (formerly `docs/dev_localization.md`) with an en/zh-Hans bilingual rollout route and a phased migration plan
+- [x] **SSH foreground/background auto-restore fix**: SSH/SSE disconnect proactively on backgrounding; on foreground restore, if the health check fails, the SSH tunnel is forcibly rebuilt once before refresh
+- [x] **SSE reconnect status compensation**: SSE bootstrap and the `server.connected` event also refetch `/session/status`, so status is backfilled along with messages
+- [x] **Busy stuck / Abort feels ineffective fix**: during poll merging, sessions "missing from the poll result but still busy/retry locally" are downgraded to idle with streaming cleaned up in step; after abort, status + messages are refetched immediately
+- [x] **Todo rendering compatibility fix (OpenCode upgrade)**: tolerates `TodoItem` old and new fields (`status/priority/id` and legacy `completed`), and fixes tool state `metadata.todos`/`output(JSON)` parsing; a non-string `metadata.input` no longer blanks the todo card
+- [x] **SSH runtime crash protection (NIO channel state)**: fixed a concurrency problem in `SSHTunnelManager` calling channel/context close across threads (unified to hop back to the NIO eventLoop), avoiding `Sent channel window adjust on channel in invalid state` triggering a fatal
+- [x] **SSH Public Key interaction hardening (second pass)**: `View Public Key` now always goes through `generateOrGetPublicKey()` (no longer reading the possibly empty cached value first), and `Copy Public Key` + `View Public Key` merged into one row of buttons, reducing Settings footprint
+- [x] **Tailscale / Server Address UX (2026-03-01)**: the ATS exception adds `NSIncludesSubdomains` for `ts.net`; `correctMalformedServerURL` fixes the `host://host:port` malformed form; `ensureServerURLHasScheme` prepends `http://` when http/https is missing; correction timing changed to lose focus (`@FocusState` + `onChange`) to avoid rewriting per character; the Server Address keyboard `submitLabel(.done)` shows Done
 
-## 已完成
+## Completed
 
-- [x] Session 列表：Chat Tab 左侧列表按钮，展示 workspace 下所有 Session，支持切换、新建、下拉刷新
-- [x] PRD 更新（async API、默认 server、移除大 session/推送/多项目）
-- [x] RFC 更新（MarkdownUI、原生能力、Phase 4 暂不实现）
-- [x] Git 初始化、.gitignore（含 opencode-official）、docs 移至 docs/
-- [x] 初始 commit：docs、OpenCodeClient 脚手架
-- [x] Phase 1 基础：Models、APIClient、SSEClient、AppState
-- [x] Phase 1 UI：Chat Tab、Settings Tab、Files Tab（占位）
-- [x] Phase 1 完善：SSE 事件解析、流式更新、Part.state 兼容、Markdown 渲染、工具调用全行显示
-- [x] Phase 2：Part 渲染（reasoning 折叠、step 分隔线、patch 卡片）、权限手动批准、主题切换
-- [x] UX 简化：一行 toolbar（左：新建/重命名/查看 session；右：3 模型图标），移除 Compact、Import、Model Presets
-- [x] Phase 3：文件树（递归展开、按需加载）、文件内容（代码行号、Markdown Preview 切换）、Files Tab（仅 File Tree）+ 文件搜索
-- [x] Tool/Patch 点击跳转：write/edit/apply_patch 等含 path 的 tool，点击可「在 File Tree 中打开」文件预览（path 来自 metadata、state.input.path/file_path/filePath、patchText 解析）
-- [x] apply_patch path 解析修复：patchText 以 "*** Begin Patch\n*** Add File: " 开头，改用 range(of:) 查找
-- [x] Tool 卡片增加「在 File Tree 中打开」按钮（label 旁文件夹图标）+ context menu
-- [x] Markdown 预览：使用 MarkdownUI 库（swift-markdown-ui 2.4.1）替代自定义渲染，完整支持 GFM（表格、标题、代码块、列表等）
-- [x] 单元测试：defaultServerAddress、sessionDecoding、messageDecoding、sseEvent、partDecoding
-- [x] UI 打磨：放大输入框（3-8 行，capsule 形状）、模型选择器胶囊渐变、渲染风格 SF Symbols、消息气泡优化、工具/补丁/权限卡片圆角柔化、MarkdownUI 用于 chat 消息渲染
-- [x] Chat：AI response 支持文字选择/复制（含 Markdown 渲染）
-- [x] Chat → 文件跳转：改用 URLComponents 编码 query，统一规范化 file path；补充空内容 warning log
-- [x] Tool 卡片：理由/标题收起态最多两行 + 省略号，展开态显示完整 Reason
-- [x] Session Todo（task list）：支持 `/session/:id/todo` 拉取 + SSE `todo.updated` 更新；`todowrite` tool 卡片内渲染 todo（方案 B，不做顶部常驻）
-- [x] Phase 3：Think Streaming delta
-- [x] Phase 3：iPad / Vision Pro 布局：`horizontalSizeClass == .regular` 时左右分栏（左 Files、右 Chat），Settings 为 toolbar 按钮
-- [x] iPad / Vision Pro 布局升级：三栏（NavigationSplitView）— 左 Workspace（Files+Sessions）/ 中 Preview / 右 Chat
-- [x] iPad 三栏列宽比例：Workspace ≈ 1/6；Preview ≈ 5/12；Chat ≈ 5/12
-- [x] iPad 三栏可拖动：设置默认 ideal 宽度，但允许用户拖动分隔条调整
-- [x] iPad 文件预览内联：左侧选择文件或 Chat tool/patch 点击文件时，更新中间 Preview（不再弹 sheet）
-- [x] iPad Preview 刷新按钮：中间栏右上角提供手动刷新（重新加载文件内容）
-- [x] 测试覆盖：SSE 事件结构、session 过滤、PathNormalizer、路径规范化
-- [x] iPad 消息流密度优化：tool/patch/permission 卡片在 iPad 三列网格横向填充；text part 仍整行显示
-- [x] PathNormalizer 加固：percent-encoding 解码、file:// 兼容、最基本的 ../ 防御、绝对路径 → workspace 相对路径解析（修复 tool read 预览空内容类问题）
-- [x] 文档同步：PRD/RFC 补充 iPad 三列网格说明；lessons.md 增加“PRD/RFC→code→test→build/test”的工作流
-- [x] Code review 已归档
-- [x] 语音输入（AI Builder Speech Recognition）：录音（mic 权限）→ 调用 `/v1/audio/transcriptions` → 文本追加到输入框
-- [x] iPad 外接键盘：回车发送（submitLabel/send + keyboardShortcut Return）
-- [x] 网络安全边界：WAN 禁止 http://（强制 https://）；Settings 展示 scheme 与提示
-- [x] 3.1 apply_patch 显示为 "patch"（ToolPartView.toolDisplayName）
-- [x] 3.2 Settings HTTP 时 scheme 橙色 + info 图标
-- [x] 1.1 AppState 详细规划
-- [x] Bug: tool layout — thinking 并入最后一条 MessageRowView，不另起行打断网格
-- [x] Bug: Diff/文件预览 — 横向滚动、minWidth 填满、textSelection
-- [x] Bug: Markdown 源码视图宽度 — Markdown/Preview 切换后源码视图只占左半边导致提前换行（改用 RawTextView 让文本充满可用宽度）
-- [x] Todo 2.4 按方案 B 暂不强调
-- [x] 最近 commit/push：9b4b842（tool layout、Diff 预览、Settings HTTP info、1.1 规划、2.4）
-- [x] **GLM-4.7 → GLM5**：模型更新为 `zai-coding-plan` / `glm-5`
-- [x] **新增模型**：增加 `openai` / `gpt-5.3-codex-spark`（GPT-5.3 Codex Spark）
-- [x] **iPhone 模型短名**：iPhone 顶栏模型 chip 显示 `GPT` / `Spark` / `Opus` / `GLM`，iPad 显示全称
-- [x] **Tool 卡片颜色区分**：`todowrite` 使用绿色强调，其它 tool 使用主题色（accentColor），便于快速扫读
-- [x] **Patch 卡片样式对齐**：与 tool 卡片一致的淡底色 + 细描边，信息更清晰
-- [x] **卡片视觉一致性**：tool/patch/permission/user message 统一淡底色透明度（0.07）+ 细描边（0.14）风格
-- [x] **Session title 自动更新**：监听 SSE `session.updated` 事件 + 发送后轮询刷新，无需手动重命名
-- [x] **Thinking 打字机效果修复**：收到 `message.part.updated`（reasoning）时固定在消息列表底部显示 `StreamingReasoningView`，不再依赖 messages 已有 reasoning part
-- [x] **录音前校验 AI Builder Token**：token 为空 / 正在测试 / 测试未通过时弹窗提示先去 Settings 配置
-- [x] **Test Connection 转圈状态**：Settings AI Builder 连接测试时显示 "Testing..." + ProgressView
-- [x] **AI Builder 测试状态可持久化**：Test Connection 成功后，OK 状态跨 App 重启保持；仅在 token/baseURL 变更时自动失效
-- [x] **发送/录音按钮上下并排**：iPhone/iPad 均改为 VStack 布局，send 在上、mic 在下、abort（如有）在最下
-- [x] **Session 列表按更新时间排序**：使用 `sortedSessions` 按 `time.updated` 降序排列
-- [x] **Session 行时间显示按更新时间**：Session 列表的“xx 分钟前”改为 `time.updated`
-- [x] **Session 列表去蓝色**：列表文本使用中性色（灰），当前 Session 用背景高亮
-- [x] **Session 操作按钮顺序调整**：Chat 顶部 toolbar 左侧按钮顺序改为 Session 列表 → 重命名 → Compact → 新建 Session
-- [x] **切换 Session 空白 bug 修复**：切换时先清空 messages/parts/streaming 状态再加载新 session 数据
-- [x] **服务端错误信息展示**：assistant message 带 `error.data.message` 时在消息中以红色卡片显示
-- [x] **iPad 侧边栏上下分区**：左侧改为上 Files（File Tree）下 Sessions（列表点击切换右侧 Chat Session）
-- [x] **Workspace 左栏等高**：iPad Workspace 左栏 Files/Sessions 两块高度 1:1
-- [x] **iPad Workspace 文件预览内联**：在 Workspace 左侧 File Tree 点文件，更新中间 Preview 栏
-- [x] **todowrite 仅渲染 todo**：Tool 卡片不再显示 todowrite 的 raw JSON input/output，只保留渲染后的 todo 列表
-- [x] **Context usage ring**：Chat 顶部模型与齿轮之间新增上下文占用环，点击弹出 token/cost 明细（无数据时灰色空环）
-- [x] **Context provider config 加载修复**：`GET /config/providers` 解码兼容 array/dict 变体；点击 ring 时若未加载则自动触发加载，并在失败时显示错误信息
-- [x] **Context sheet 默认大小优化**：iPad 打开即为 large（避免先小后逐步变大）
-- [x] **输入草稿持久化**：按 sessionID 持久化未发送输入，切换 session 可恢复；发送成功后清空
-- [x] **模型选择按 Session 记忆**：切换 session 时自动恢复该 session 上次选择的模型（避免全局覆盖）
-- [x] **发送重复消息修复**：busy/polling 场景下去重 optimistic temp user message，避免 UI 显示两条
-- [x] **Busy/Retry 会话轮询增强**：将 `retry` 与 `busy` 同等视为 busy；busy 时自动轮询刷新，退出 busy 自动停止
-- [x] **Chat Activity 消息**：将“当前操作 + 耗时”渲染为消息流中的最后一条（按 session 记忆）；运行中每秒更新，结束后定格为 Completed 并保留到下一次运行；文案参考 web：reasoning 以 `**title**` 提取为 `Thinking - title`，tool 以类型映射到 “Searching/Making edits/Running…”
-- [x] **loadMessages 解码兜底**：支持空 body/非数组 payload（`messages`/`data`/`result` 包裹、单对象）以避免轮询因解析失败中断
-- [x] **Streaming 期间消息可见性**：轮询合并保留临时 user 消息与 streaming assistant draft（避免 busy 空列表时 UI 闪回/丢失）
-- [x] **Chat 空状态优化**：无 session / busy(retry) / 空消息分别展示不同提示；scroll anchor 纳入 streaming delta 长度避免滚动不刷新
+- [x] Session list: a list button on the left of the Chat tab showing all sessions under the workspace, with switching, creation, and pull-to-refresh
+- [x] PRD update (async API, default server, removal of large sessions/push/multi-project)
+- [x] RFC update (MarkdownUI, native capabilities, Phase 4 deferred)
+- [x] Git init, .gitignore (including opencode-official), docs moved into docs/
+- [x] Initial commit: docs, OpenCodeClient scaffold
+- [x] Phase 1 basics: Models, APIClient, SSEClient, AppState
+- [x] Phase 1 UI: Chat Tab, Settings Tab, Files Tab (placeholder)
+- [x] Phase 1 polish: SSE event parsing, streaming updates, Part.state compatibility, Markdown rendering, full-row tool call display
+- [x] Phase 2: Part rendering (reasoning collapse, step separators, patch cards), manual permission approval, theme switching
+- [x] UX simplification: one toolbar row (left: new/rename/view session; right: 3 model icons), removed Compact, Import, Model Presets
+- [x] Phase 3: file tree (recursive expansion, on-demand loading), file content (code line numbers, Markdown Preview switching), Files Tab (file tree only) + file search
+- [x] Tool/Patch tap-through: tools carrying a path (write/edit/apply_patch etc.) open the file preview "in the File Tree" on tap (path from metadata, state.input.path/file_path/filePath, patchText parsing)
+- [x] apply_patch path parsing fix: patchText starts with "*** Begin Patch\n*** Add File: "; switched to a range(of:) lookup
+- [x] Tool cards gained an "open in File Tree" button (folder icon next to the label) + context menu
+- [x] Markdown preview: switched to the MarkdownUI library (swift-markdown-ui 2.4.1) instead of custom rendering, with full GFM support (tables, headings, code blocks, lists, etc.)
+- [x] Unit tests: defaultServerAddress, sessionDecoding, messageDecoding, sseEvent, partDecoding
+- [x] UI polish: larger input box (3-8 lines, capsule shape), gradient model selector capsule, SF Symbols rendering style, message bubble refinements, softened tool/patch/permission card corners, MarkdownUI for chat message rendering
+- [x] Chat: AI responses support text selection/copy (with Markdown rendering)
+- [x] Chat → file navigation: switched to URLComponents for query encoding, unified file path normalization; added an empty-content warning log
+- [x] Tool cards: reason/title collapsed state max two lines + ellipsis; expanded state shows the full Reason
+- [x] Session Todo (task list): supports `/session/:id/todo` fetch + SSE `todo.updated` updates; renders todos inside the `todowrite` tool card (option B, no persistent top bar)
+- [x] Phase 3: Think Streaming delta
+- [x] Phase 3: iPad / Vision Pro layout: `horizontalSizeClass == .regular` splits left/right (Files left, Chat right), Settings as a toolbar button
+- [x] iPad / Vision Pro layout upgrade: three columns (NavigationSplitView) — left Workspace (Files+Sessions) / middle Preview / right Chat
+- [x] iPad three-column widths: Workspace ≈ 1/6; Preview ≈ 5/12; Chat ≈ 5/12
+- [x] iPad three columns draggable: default ideal widths set, but users can drag the dividers
+- [x] iPad inline file preview: selecting a file on the left or tapping a file in a Chat tool/patch updates the middle Preview (no more sheet)
+- [x] iPad Preview refresh button: manual refresh at the top-right of the middle column (reloads file content)
+- [x] Test coverage: SSE event structure, session filtering, PathNormalizer, path normalization
+- [x] iPad message stream density: tool/patch/permission cards fill horizontally in the iPad three-column grid; text parts still take the full row
+- [x] PathNormalizer hardening: percent-encoding decode, file:// compatibility, basic ../ defense, absolute path → workspace-relative resolution (fixes empty-content tool read previews)
+- [x] Doc sync: PRD/RFC gained the iPad three-column grid notes; lessons.md gained the "PRD/RFC→code→test→build/test" workflow
+- [x] Code review archived
+- [x] Voice input (AI Builder Speech Recognition): record (mic permission) → call `/v1/audio/transcriptions` → append text to the input box
+- [x] iPad external keyboard: Enter sends (submitLabel/send + keyboardShortcut Return)
+- [x] Network security boundary: http:// forbidden on WAN (https:// enforced); Settings shows the scheme and a hint
+- [x] 3.1 apply_patch displays as "patch" (ToolPartView.toolDisplayName)
+- [x] 3.2 Settings HTTP scheme shown orange + info icon
+- [x] 1.1 AppState detailed planning
+- [x] Bug: tool layout — thinking merges into the last MessageRowView instead of starting a new row that breaks the grid
+- [x] Bug: Diff/file preview — horizontal scrolling, minWidth fill, textSelection
+- [x] Bug: Markdown source view width — after Markdown/Preview switching the source view only took the left half and wrapped early (switched to RawTextView so text fills the available width)
+- [x] Todo 2.4 left unemphasized per option B
+- [x] Recent commit/push: 9b4b842 (tool layout, Diff preview, Settings HTTP info, 1.1 planning, 2.4)
+- [x] **GLM-4.7 → GLM5**: model updated to `zai-coding-plan` / `glm-5`
+- [x] **New model**: added `openai` / `gpt-5.3-codex-spark` (GPT-5.3 Codex Spark)
+- [x] **iPhone model short names**: the iPhone top bar model chip shows `GPT` / `Spark` / `Opus` / `GLM`, iPad shows full names
+- [x] **Tool card color coding**: `todowrite` uses a green accent, other tools use the theme color (accentColor), for fast scanning
+- [x] **Patch card style alignment**: same light background + thin border as tool cards, clearer information
+- [x] **Card visual consistency**: tool/patch/permission/user message share the same light background opacity (0.07) + thin border (0.14) style
+- [x] **Session title auto-update**: listens for SSE `session.updated` + polls after send, no manual rename needed
+- [x] **Thinking typewriter effect fix**: on `message.part.updated` (reasoning) the `StreamingReasoningView` is pinned to the bottom of the message list, no longer depending on messages already containing a reasoning part
+- [x] **AI Builder token check before recording**: prompts to configure Settings first when the token is empty / being tested / failed its test
+- [x] **Test Connection spinner state**: the Settings AI Builder connection test shows "Testing..." + ProgressView
+- [x] **AI Builder test state persistence**: after a successful Test Connection, the OK state survives app restarts; it invalidates only when token/baseURL changes
+- [x] **Send/record buttons stacked vertically**: iPhone/iPad both use a VStack layout, send on top, mic below, abort (if present) at the bottom
+- [x] **Session list sorted by update time**: `sortedSessions` orders by `time.updated` descending
+- [x] **Session row time shows update time**: the session list's "xx minutes ago" now uses `time.updated`
+- [x] **Session list de-blued**: list text uses neutral (gray) colors, with the current session highlighted by background
+- [x] **Session action button reorder**: the Chat top toolbar's left buttons are now Session list → rename → Compact → new session
+- [x] **Blank-on-session-switch bug fix**: messages/parts/streaming state clear first before the new session's data loads
+- [x] **Server error message display**: an assistant message carrying `error.data.message` shows a red card in the stream
+- [x] **iPad sidebar split top/bottom**: the left side is now Files (File Tree) on top and Sessions below (tapping a session switches the right Chat session)
+- [x] **Workspace left column equal heights**: the iPad Workspace left column's Files/Sessions blocks are 1:1
+- [x] **iPad Workspace inline file preview**: tapping a file in the Workspace's left File Tree updates the middle Preview column
+- [x] **todowrite renders only todos**: tool cards no longer show todowrite's raw JSON input/output, only the rendered todo list
+- [x] **Context usage ring**: a context usage ring added between the model and the gear at the top of Chat; tapping shows a token/cost breakdown (gray empty ring with no data)
+- [x] **Context provider config load fix**: `GET /config/providers` decoding tolerates array/dict variants; tapping the ring triggers a load if not loaded, and shows the error on failure
+- [x] **Context sheet default size**: opens as large on iPad (avoiding small-then-grow)
+- [x] **Input draft persistence**: unsent input persists per sessionID and restores on session switch; cleared after a successful send
+- [x] **Model selection remembered per session**: switching sessions restores that session's last chosen model (no global overwrite)
+- [x] **Duplicate send fix**: busy/polling scenarios dedup the optimistic temp user message so the UI does not show two
+- [x] **Busy/Retry session polling enhancement**: `retry` treated the same as `busy`; polling auto-refreshes while busy and stops when it exits
+- [x] **Chat Activity message**: "current action + elapsed time" renders as the last item in the message stream (remembered per session); updates every second while running, freezes as Completed when done and stays until the next run; copy follows web: reasoning extracts `**title**` into `Thinking - title`, tools map by type to "Searching/Making edits/Running…"
+- [x] **loadMessages decode fallbacks**: supports empty body / non-array payloads (`messages`/`data`/`result` wrappers, single object) so polling does not break on parse failure
+- [x] **Message visibility during streaming**: poll merging keeps the temp user message and the streaming assistant draft (preventing UI flicker/loss when busy lists go empty)
+- [x] **Chat empty states**: distinct hints for no session / busy(retry) / empty messages; scroll anchor includes streaming delta length to avoid stale scrolling
 
-## 待办
+## Follow-ups
 
-- [x] **Code Review 1.1**：AppState 拆分（SessionStore/MessageStore/FileStore/TodoStore，保持对外 API 不变）
-- [x] **Code Review 1.2**：SSE 调研（API 单行 data 已满足，RFC 规划，加 Accept/Cache-Control 头）
-- [x] **Code Review 1.3**：SSE message.updated 按 sessionID 过滤
-- [x] **Code Review 1.4**：PathNormalizer 统一路径规范化（Utils/PathNormalizer.swift）
-- [ ] **Phase 4：iPad / Vision Pro 布局优化**：可考虑（可选）Preview 栏支持“固定/关闭当前文件”等更细粒度控制
-- [x] **模型替换（OpenAI）**：GPT-5.2 替换为 GPT-5.3 Codex Spark（短名 `Spark`），并将 GPT-5.3 Codex 的 iPhone 短名改为 `GPT`
-- [ ] **iPhone 发热排查与优化（暂缓）**：按当前优先级先暂停，后续再做 Instruments 复核与进一步优化
-- [x] **Activity Row 逐 turn 保留校验（代码审查）**：已完成一轮代码级检查（逐 turn completed + 新 turn running 逻辑）；真机交互回归继续跟进
-- [x] **全量 Codebase Review 文档重写**：删除旧 `docs/code_review.md` 并按当前代码重写，聚焦架构/可重构点/明显性能与安全问题
-- [x] **SSE 主通道 + 一次性 bootstrap**：移除 busy 常驻轮询，保留重连/进入会话的一次全量补偿同步
-- [x] **AppState Refactor Iteration B（PermissionController）**：先补测试，再抽离权限控制逻辑并保持外部接口不变
+- [x] **Code Review 1.1**: AppState split (SessionStore/MessageStore/FileStore/TodoStore, external API unchanged)
+- [x] **Code Review 1.2**: SSE research (single-line API data already suffices; RFC planning; Accept/Cache-Control headers added)
+- [x] **Code Review 1.3**: SSE message.updated filtered by sessionID
+- [x] **Code Review 1.4**: PathNormalizer unified path normalization (Utils/PathNormalizer.swift)
+- [ ] **Phase 4: iPad / Vision Pro layout optimization**: could consider (optional) Preview column support for finer-grained controls like "pin/close current file"
+- [x] **Model replacement (OpenAI)**: GPT-5.2 replaced by GPT-5.3 Codex Spark (short name `Spark`), and GPT-5.3 Codex's iPhone short name changed to `GPT`
+- [ ] **iPhone heat investigation and optimization (deferred)**: paused at the current priority; Instruments re-check and further optimization come later
+- [x] **Activity Row per-turn retention check (code review)**: one code-level pass done (per-turn completed + new-turn running logic); on-device interaction regression still being tracked
+- [x] **Full codebase review doc rewrite**: deleted the old `docs/code_review.md` and rewrote it against the current code, focusing on architecture/refactorability/obvious performance and security issues
+- [x] **SSE main channel + one-shot bootstrap**: removed constant busy polling, keeping the one full compensating sync on reconnect/session entry
+- [x] **AppState Refactor Iteration B (PermissionController)**: tests added first, then the permission control logic extracted with the external interface unchanged
 
-### Code Review 改进（来自 code_review.md）
+### Code Review improvements (from code_review.md)
 
-- [x] **4.2 Race Condition**：Session 切换添加 `sessionLoadingID` 防止快速切换时竞态
-- [x] **3.2 Error Presentation**：统一错误处理模式
-- [x] **3.3 Magic Numbers**：提取常量（列宽比例、动画时长等）
-- [x] **3.4 Test Coverage**：添加 AppState 层面测试
-- [x] **3.5 View Decomposition**：拆分 ChatTabView
-- [x] **3.1 AppState Size**（部分完成 - 已提取 Store，完整 Coordinator 待定）：继续提取 Coordinator
-- [x] **4.1 Memory Leaks**：SSE 连接 deinit 处理
-- [x] **4.4 Default Server**：修改默认服务器配置
+- [x] **4.2 Race Condition**: session switching gained `sessionLoadingID` to prevent races during rapid switching
+- [x] **3.2 Error Presentation**: unified error handling pattern
+- [x] **3.3 Magic Numbers**: extracted constants (column width ratios, animation durations, etc.)
+- [x] **3.4 Test Coverage**: added AppState-level tests
+- [x] **3.5 View Decomposition**: split up ChatTabView
+- [x] **3.1 AppState Size** (partially done - Stores extracted, full Coordinator undecided): continue extracting the Coordinator
+- [x] **4.1 Memory Leaks**: SSE connection deinit handling
+- [x] **4.4 Default Server**: changed the default server configuration
 
-## 遇到的问题
+## Problems Encountered
 
-1. **Local network prohibited (iOS)**：连接 `192.168.180.128:4096` 时报错 `Local network prohibited`。需在 Info.plist 添加：
-   - `NSLocalNetworkUsageDescription`：说明为何需要本地网络，首次访问会弹出权限弹窗
-   - `NSAppTransportSecurity` → `NSAllowsLocalNetworking`：允许 HTTP 访问本地 IP
-   - 用户需在弹窗中要点「允许」才能连接
+1. **Local network prohibited (iOS)**: connecting to `192.168.180.128:4096` errors with `Local network prohibited`. Info.plist needs:
+   - `NSLocalNetworkUsageDescription`: explains why local network access is needed; the permission dialog appears on first access
+   - `NSAppTransportSecurity` → `NSAllowsLocalNetworking`: allows HTTP to local IPs
+   - The user must tap "Allow" in the dialog to connect
 
-2. **发送后卡住**：发送失败时无反馈，输入框已清空导致用户不知道失败。修复：发送失败时恢复输入、显示错误 alert、发送中显示 loading
+2. **Stuck after send**: a failed send gave no feedback and the input box was already cleared, so the user never knew. Fix: restore the input on send failure, show an error alert, and show loading while sending
 
-3. **发送后无实时更新**：发送成功、web 端已有回应，但 iOS 端需重启才能看到。原因：
-   - SSE 仅在 `willEnterForegroundNotification` 时连接，首次启动时未连接
-   - 部分事件（如 `server.connected`）无 `directory` 字段，解析失败
-   - 修复：在 `refresh()` 成功后调用 `connectSSE()`；`SSEEvent.directory` 改为可选；发送成功后启动 60 秒轮询（每 2 秒 loadMessages）作为 fallback
+3. **No live updates after send**: the send succeeded and the web client already had a reply, but the iOS side needed a restart to see it. Causes:
+   - SSE only connected on `willEnterForegroundNotification`, so it was never connected on first launch
+   - Some events (like `server.connected`) lack a `directory` field and failed to parse
+   - Fix: call `connectSSE()` after `refresh()` succeeds; `SSEEvent.directory` became optional; after a successful send a 60-second poll (loadMessages every 2 seconds) runs as a fallback
 
-4. **loadMessages 解析失败**：LLM 输出 thinking delta 时，`Part.state` 期望 String 但 API 返回 object（ToolState）。报错：`Expected to decode String but found a dictionary`。修复：新增 `PartStateBridge`，支持 state 为 String 或 object，object 时提取 `status`/`title` 用于 UI 显示
+4. **loadMessages parse failure**: when the LLM streams thinking deltas, `Part.state` expected a String but the API returned an object (ToolState). Error: `Expected to decode String but found a dictionary`. Fix: added `PartStateBridge`, supporting state as String or object, extracting `status`/`title` from objects for UI display
 
-5. **Unable to simultaneously satisfy constraints**：键盘相关 (TUIKeyboardContentView, UIKeyboardImpl) 的约束冲突。来自系统键盘，非应用代码，通常无需修复。
+5. **Unable to simultaneously satisfy constraints**: keyboard-related constraint conflicts (TUIKeyboardContentView, UIKeyboardImpl). These come from the system keyboard, not app code, and usually need no fix.
 
-6. **术语澄清**：Think streaming 实指 Think（ReasoningPartView）的展开/收起行为，非 Tool。
+6. **Terminology clarification**: Think streaming actually refers to the Think (ReasoningPartView) expand/collapse behavior, not Tool.
 
-7. **轮询时 messages 解析噪声**：busy/retry 期间偶发 `The data couldn’t be read because it is missing`（空 body / payload 形态不稳定）。修复：APIClient 增加空 body guard + 多形态解码兜底；AppState 捕获 DecodingError 仅记录日志，避免把 polling 当作连接失败。
+7. **Polling messages parse noise**: during busy/retry, occasional `The data couldn’t be read because it is missing` (empty body / unstable payload shapes). Fix: APIClient gained an empty body guard + multi-shape decode fallbacks; AppState catches DecodingError and only logs, so polling is not mistaken for a connection failure.
 
-8. **SSH runtime fatal（NIO channel state）**：在 Settings 页滚动等场景偶发 `Sent channel window adjust on channel in invalid state`。定位为 `SSHTunnelManager` 中从 NW 回调线程直接调用 NIO `channel.close/context.close`，导致状态机竞态；修复为统一通过 `eventLoop.execute` 调度关闭。
+8. **SSH runtime fatal (NIO channel state)**: occasional `Sent channel window adjust on channel in invalid state` when scrolling the Settings page and similar. Traced to `SSHTunnelManager` calling NIO `channel.close/context.close` directly from NW callback threads, racing the state machine; fixed by scheduling all closes through `eventLoop.execute`.
 
-9. **Simulator SpringBoard 崩溃（非 App 进程）**：最新崩溃日志显示 `Process: SpringBoard`，线程 `com.apple.xpc.activity.com.apple.SplashBoard` 触发 `dispatch_assert_queue`，属于模拟器系统组件异常，不是 `OpenCodeClient` 进程崩溃。结论：与当前业务代码改动无直接因果；排查优先使用“重启/抹除 simulator + 重新安装 app”路径。
+9. **Simulator SpringBoard crash (non-app process)**: the latest crash logs show `Process: SpringBoard`, with thread `com.apple.xpc.activity.com.apple.SplashBoard` hitting `dispatch_assert_queue`; a simulator system component anomaly, not an `OpenCodeClient` process crash. Conclusion: no direct causal link to current code changes; triage should start with the "restart/erase the simulator + reinstall the app" path.
 
-10. **View Public Key 部分场景仍空白**：在 SSH enabled 但连接失败时，旧逻辑会先读本地缓存公钥，存在命中空字符串导致 sheet 为空的风险。修复：打开 sheet 时统一通过 `generateOrGetPublicKey()` 获取并做 trim + empty guard，异常时走错误弹窗。
+10. **View Public Key still blank in some cases**: when SSH was enabled but the connection failed, the old logic read the cached public key first and could hit an empty string, leaving the sheet empty. Fix: opening the sheet always goes through `generateOrGetPublicKey()` with trim + empty guard, and anomalies surface the error dialog.
 
-11. **Tailscale MagicDNS 需 ATS 例外**：公司策略要求所有 host 使用 ATS/HTTPS，但 Tailscale MagicDNS（`*.ts.net`）解析的服务器通常跑 HTTP。修复：在 Info.plist 的 `NSAppTransportSecurity` 下添加 `NSExceptionDomains` → `ts.net` → `NSExceptionAllowsInsecureHTTPLoads: true` + **`NSIncludesSubdomains: true`**（关键：无此键则 `ts.net` 不匹配子域名如 `host.example.ts.net`），仅对 Tailscale 域名豁免 HTTPS 要求；其他域名仍受 ATS 约束。**Server Address 畸形格式**：iOS `.textContentType(.URL)` 或粘贴可能产生 `host://host:port` 格式，导致请求连到 80 端口、ECONNREFUSED。修复：`correctMalformedServerURL` 修正畸形；`ensureServerURLHasScheme` 无 http/https 时补 `http://`；修正时机为 **lose focus**（`@FocusState` + `onChange`），避免每字符改写；键盘 `submitLabel(.done)` 显示 Done。
+11. **Tailscale MagicDNS needs an ATS exception**: company policy requires ATS/HTTPS for all hosts, but servers behind Tailscale MagicDNS (`*.ts.net`) usually run HTTP. Fix: under Info.plist's `NSAppTransportSecurity` add `NSExceptionDomains` → `ts.net` → `NSExceptionAllowsInsecureHTTPLoads: true` + **`NSIncludesSubdomains: true`** (key point: without it `ts.net` does not match subdomains like `host.example.ts.net`), exempting only the Tailscale domain from the HTTPS requirement; other domains stay under ATS. **Malformed Server Address format**: iOS `.textContentType(.URL)` or pasting can produce `host://host:port`, sending requests to port 80 with ECONNREFUSED. Fix: `correctMalformedServerURL` corrects the malformed form; `ensureServerURLHasScheme` prepends `http://` when http/https is missing; correction happens on **lose focus** (`@FocusState` + `onChange`) to avoid rewriting per character; the keyboard `submitLabel(.done)` shows Done.
 
-## 决策记录
+## Decision Records
 
-（记录实现过程中的技术决策）
+(Technical decisions made during implementation are recorded here)
 
-## API 验证（localhost:4096）
+## API Verification (localhost:4096)
 
-- **GET /project**：✅ 返回 `Project[]`，含 id/worktree/vcs/time
-- **GET /session?directory=&limit=**：✅ 按 worktree 过滤 sessions，limit 默认 100
-- **GET /global/health**：✅ `{ healthy, version }`
-- **GET /config/providers**：✅ 返回 `providers: array`（非 dict），每项含 `id`, `name`, `models: { modelID: ModelInfo }`。已修复 iOS 解析。
-- **GET /agent**：✅ 返回 `[AgentInfo]`，含 name/description/mode/hidden/native 字段。iOS 端过滤 mode=subagent。
-- **Import from Server**：依赖 config/providers，解析修复后应可正常导入。
+- **GET /project**: ✅ returns `Project[]` with id/worktree/vcs/time
+- **GET /session?directory=&limit=**: ✅ filters sessions by worktree, limit defaults to 100
+- **GET /global/health**: ✅ `{ healthy, version }`
+- **GET /config/providers**: ✅ returns `providers: array` (not dict), each item carrying `id`, `name`, `models: { modelID: ModelInfo }`. iOS parsing fixed.
+- **GET /agent**: ✅ returns `[AgentInfo]` with name/description/mode/hidden/native fields. The iOS side filters mode=subagent.
+- **Import from Server**: depends on config/providers; should import fine after the parsing fix.
 
-当前模型预设（4 个）：
-| 显示名称 | providerID | modelID |
+Current model presets (4):
+| Display name | providerID | modelID |
 |----------|------------|---------|
 | GLM-5.1 | `zai-coding-plan` | `glm-5.1` |
 | GPT-5.4 | `openai` | `gpt-5.4` |
 | GPT-5.3 Codex | `openai` | `gpt-5.3-codex` |
 | DeepSeek | `deepseek` | `deepseek-v4-pro` |
 
-Agent prefill（5 个，OpenCode-Builder 默认）：
+Agent prefill (5, OpenCode-Builder default):
 - OpenCode-Builder (mode=all)
 - Sisyphus (Ultraworker) (mode=primary)
 - Hephaestus (Deep Agent) (mode=primary)
 - Prometheus (Plan Builder) (mode=all)
 - Atlas (Plan Executor) (mode=primary)
 
-## Diff 问题
+## Diff Issue
 
-`GET /session/:id/diff` 实测返回 `[]`，即使 session 有 write 操作。GH #10920 等表明可能是 OpenCode server 端 session_diff 追踪问题，官方 web 客户端也可能遇到。暂不修复，待 server 端修复。
+Measured against a live server, `GET /session/:id/diff` returns `[]` even for sessions with write operations. GH #10920 and others suggest this may be an OpenCode server-side session_diff tracking problem, and the official web client may hit it too. Not fixed for now, pending a server-side fix.
 
-## 工具卡渲染重做（仅设计，未实现）
+## Tool Card Rendering Redo (design only, not implemented)
 
-在 design.md 末尾新增 "工具卡渲染重做" 章节。**注意：最初探索过像素风，但放弃了——OpenCode 整体不做像素化**，吸引人的是那套**信息组织方式**而非像素质感。**只落设计 + 效果图，不改代码**，实现放后续 PR。
+Added a "tool card rendering redo" section at the end of design.md. **Note: a pixel-art style was explored initially and abandoned; OpenCode as a whole does not go pixelated**. What is appealing is that **way of organizing information**, not the pixel texture. **Design + mockups only, no code changes**; implementation goes to a later PR.
 
-三个具体改动：
-1. **区分谁说话**：用户消息保留蓝左竖条；OpenCode 回复**去头像**但加 "OpenCode" 文字标题 + **保留现有模型小字**（不动）。用不同 visual style 明确分开。
-2. **文件卡 2 列网格**：patch/edit/write/read → 文件卡（file 图标 + 文件名 + chevron），2 列网格排列。
-3. **合并成 "N tool calls"**：其余工具 → `▸ 3 tool calls`，展开看里面逐条。
+Three concrete changes:
+1. **Distinguish who is speaking**: user messages keep the blue left bar; OpenCode replies **drop the avatar** but add an "OpenCode" text title + **keep the existing model small print** (untouched). The two are clearly separated by different visual styles.
+2. **File cards in a 2-column grid**: patch/edit/write/read → file cards (file icon + file name + chevron) laid out in a 2-column grid.
+3. **Merge into "N tool calls"**: other tools → `▸ 3 tool calls`, expandable to see each one inside.
 
-排列：版式优先的近时间序（相邻同类聚合），不分组、不加分区标题。边界：不引入像素风、模型选择器不动、不要右上角用户头像、AI working 维持现有 gold 轻动效。
+Layout: layout-first near-chronological order (adjacent same-type items aggregate), with no grouping and no section headers. Boundaries: no pixel-art style, the model selector stays untouched, no user avatar in the top-right corner, and AI working keeps the existing subtle gold animation.
 
-效果图见 `docs/design_images/tool_cards_chronological.png`（gpt-image-2 生成）。
+Mockup at `docs/design_images/tool_cards_chronological.png` (generated by gpt-image-2).

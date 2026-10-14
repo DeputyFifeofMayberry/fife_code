@@ -1,34 +1,34 @@
-# OpenCode server v2 compatibility — implementation notes
+# OpenCode server v2 compatibility - implementation notes
 
-Status: implemented on `opencodev2-integration`；live contract gate 已过（45/45，2026-10-12）；TestFlight 验证待做。
-日期：2026-10-12
-Spec：`docs/v2_server_compatibility.md`（wire 契约的唯一来源）
+Status: implemented on `opencodev2-integration`; live contract gate passed (45/45, 2026-10-12); TestFlight verification still pending.
+Date: 2026-10-12
+Spec: `docs/v2_server_compatibility.md` (the single source of truth for the wire contract)
 
-## 背景
+## Background
 
-用户的 server 已是 v2.0.26，而客户端只讲 v1 HTTP/SSE。Spec 实测于 v2.0.18–2.0.20：路由前缀 `/api/*`、事件名换血（`session.text.*`、`form.*`）、部分 v1 行为无 v2 对应（todo、archive 写）。
+The user's server is already v2.0.26 while the client only speaks v1 HTTP/SSE. The spec was measured against v2.0.18-2.0.20: route prefix `/api/*`, wholesale event name changes (`session.text.*`, `form.*`), and some v1 behaviors with no v2 equivalent (todo, archive write).
 
-## 改动
+## Changes
 
-- **检测**（`Services/ServerGeneration.swift`）：`HostProfile.apiGeneration`（`auto|v1|v2`，缺失解码为 auto，URL 变更即清除）。连接时探测 `GET /global/health` → `GET /api/info`（8KB body、JSON 必须可解析、401/403 与超时不再探测另一条腿）。探测结果写回 profile 并驱动 `APIClient.generation`。
-- **REST 分支**（`Services/APIClient+V2.swift` + 各方法顶部 `generation == .v2` 分支）：spec「Every current method」表逐行实现。精确状态码（prompt 200 否则抛、agent/model switch 204、删除/回复 204）；`updateSessionArchived` 不发请求直接抛 404；`sessionTodos` 直接返回 `[]`；表单回复表（form id → session + 字段 + label→value）存在 `APIClient`，由 `pendingQuestions(sessionID:)` 与 SSE `form.created` 灌入。
-- **纯映射**（`Services/V2Mapper.swift`）：session/message/form/permission/model/agent/diff/file/project/status 全部按 spec 表实现，产物是既有模型类型，不新增第二种 Session/Message。
-- **SSE**（`Services/SSEClient.swift` + `AppState+SSE.swift`）：v2 帧 `{id,type,data}` 归一化为 v1 事件形状（`payload` 是 v1 必填字段，故 v1→v2 依次解码无歧义）；`handleV2SSEEvent` 按 spec SSE 表逐行翻译成既有 handler 接受的属性字典，数据路径（`MessageStore` upsert / completeness gate）与 v1 完全共用；`session.text.started` 的无 text part 按 spec 触发一次 REST 回退；`session.created/renamed/metadata.updated` 走 GET + `applySessionUpdate`。
-- **已批准的两处 spec 偏差**：① v2 `type:"synthetic"` 消息被映射（回执卡片在 v2 可见）；② `isConnected` 在探测成功即置位，不加 session-list gate。
+- **Detection** (`Services/ServerGeneration.swift`): `HostProfile.apiGeneration` (`auto|v1|v2`, decodes to auto when missing, cleared on URL change). On connect, probe `GET /global/health` → `GET /api/info` (8KB body, JSON must parse, 401/403 and timeout stop probing the other leg). The probe result is written back to the profile and drives `APIClient.generation`.
+- **REST branching** (`Services/APIClient+V2.swift` + a `generation == .v2` branch at the top of each method): implemented line by line against the spec's "Every current method" table. Exact status codes (prompt 200 or throw, agent/model switch 204, delete/reply 204); `updateSessionArchived` throws 404 without sending a request; `sessionTodos` returns `[]` directly; the form reply table (form id → session + fields + label→value) lives in `APIClient`, fed by `pendingQuestions(sessionID:)` and the SSE `form.created` event.
+- **Pure mapping** (`Services/V2Mapper.swift`): session/message/form/permission/model/agent/diff/file/project/status all implemented per the spec tables; the outputs are the existing model types, with no second Session/Message type added.
+- **SSE** (`Services/SSEClient.swift` + `AppState+SSE.swift`): v2 frames `{id,type,data}` normalize into the v1 event shape (`payload` is a required v1 field, so v1→v2 sequential decoding is unambiguous); `handleV2SSEEvent` translates line by line per the spec's SSE table into the properties dictionaries the existing handlers accept, and the data path (`MessageStore` upsert / completeness gate) is fully shared with v1; `session.text.started` with no text part triggers one REST fallback per the spec; `session.created/renamed/metadata.updated` go through GET + `applySessionUpdate`.
+- **Two approved spec deviations**: (1) v2 `type:"synthetic"` messages are mapped (the receipt card is visible on v2); (2) `isConnected` is set as soon as probing succeeds, without a session-list gate.
 
-## 测试
+## Tests
 
-- `ServerGenerationTests`：探测 saved-body（v1 healthy / unhealthy / HTML / 空 500 / `/api/info` v2 / 401 不续探 / 超时 / 8KB 截断）+ HostProfile 绑定 + 连接流（mock 注入）。
-- `V2MapperTests`：spec「Unit tests」每行一条（session map、message 行、prompt 编码、archive、permission、form、model、project、diff、file status、todos 空、delta part id、CarResponseEnvelope）。
-- `V2APIWireTests`：URLProtocol stub 下的 wire 断言（路径/查询/请求体/精确状态码、form 表 404、structured send 409 容忍 + 轮询、v1 路径不变）。
-- `V2SSETests`：帧判别 + AppState 级翻译（started→delta→ended 收敛、execution.failed 标记发送失败、form 生命周期、permission 流）。
+- `ServerGenerationTests`: probing against saved bodies (v1 healthy / unhealthy / HTML / empty 500 / `/api/info` v2 / 401 stops further probing / timeout / 8KB truncation) + HostProfile binding + the connect flow (mock injection).
+- `V2MapperTests`: one test per row of the spec's "Unit tests" section (session map, message rows, prompt encoding, archive, permission, form, model, project, diff, file status, empty todos, delta part id, CarResponseEnvelope).
+- `V2APIWireTests`: wire assertions under a URLProtocol stub (paths/queries/request bodies/exact status codes, form table 404, structured send 409 tolerance + polling, v1 paths unchanged).
+- `V2SSETests`: frame discrimination + AppState-level translation (started→delta→ended convergence, execution.failed marks the send as failed, form lifecycle, permission flow).
 
-## 未决
+## Open Items
 
-- ~~`scripts/v2_contract_check.py` 对 2.0.26 的实跑~~ **已通过**：2026-10-12 对 live server（`http://127.0.0.1:4096`，`2.0.26-local.27a15e7935`）45/45 全过、exit 0。无 spec 漂移。
-- ~~v2 `type:"synthetic"` 的真实字段布局未实测~~ **已实测**：扫描 live server 全部 69 个 session 共 297 条 synthetic 行，仅两种形状且都带顶层 `text`（mapper 主路径直接命中）：
-  1. `{id, time.created, text, type}`（14 条，plan-mode system-reminder）
-  2. `{id, time.created, text, description, metadata.instruction.paths, type}`（283 条，AGENTS.md 指令加载，`description` 如 "Loaded packages\cli\AGENTS.md"）
-  `payload.text` 从未出现；额外字段 mapper 不读、无害。`V2MapperTests` 的 synthetic fixture 已替换为真实抓取的两种 body（一条覆盖富形状 + 一条覆盖最小形状）。未发现 `<task>` 回执语法的 wire 端 body——回执卡片文本由客户端自行合成，wire 侧只需 synthetic 行以 user 形态到达（已证实）。
-- 待做：~~TestFlight 真机验证~~（build 18 已装，验证进行中）。
-- **Live 发现（2026-10-12/13）**：2.0.26 build 的 `/global/health` 即使凭证错误也返回 200 HTML（SPA fallback 不走 auth 挑战），401 只出现在 `/api/info`。因此探测结果为 `authFailure(healthStatus: 200, infoStatus: 401)` 时，连接错误的用户可见文案曾取 health 腿状态 → 显示误导性的 "HTTP 200"。已修（`applyGenerationDetection` 的 authFailure 分支改为 `infoStatus ?? healthStatus`，显示 "Basic Auth rejected"），含回归测试 `authFailureSurfacesInfoLegRejectionNotHealthStatus`。用户侧当时真实问题：PowerShell 里 `set X=Y` 是 cmd 语法静默无效 → env 未生效 → server 打印随机密码。
+- ~~`scripts/v2_contract_check.py` run against 2.0.26~~ **passed**: on 2026-10-12 against the live server (`http://127.0.0.1:4096`, `2.0.26-local.27a15e7935`), 45/45 passed, exit 0. No spec drift.
+- ~~actual field layout of v2 `type:"synthetic"` unmeasured~~ **measured**: scanned all 69 sessions on the live server, 297 synthetic rows in total, only two shapes and both carry top-level `text` (the mapper's main path hits directly):
+  1. `{id, time.created, text, type}` (14 rows, plan-mode system-reminder)
+  2. `{id, time.created, text, description, metadata.instruction.paths, type}` (283 rows, AGENTS.md instruction loading, `description` such as "Loaded packages\cli\AGENTS.md")
+  `payload.text` never appears; extra fields are unread and harmless to the mapper. The synthetic fixture in `V2MapperTests` has been replaced with the two real captured bodies (one covering the rich shape + one covering the minimal shape). No wire-side body with `<task>` receipt syntax was found. The receipt card text is synthesized by the client itself; the wire side only needs synthetic rows to arrive in user form (confirmed).
+- To do: ~~TestFlight on-device verification~~ (build 18 installed, verification in progress).
+- **Live finding (2026-10-12/13)**: the 2.0.26 build's `/global/health` returns 200 HTML even with bad credentials (the SPA fallback does not go through the auth challenge); 401 appears only on `/api/info`. So when the probe result was `authFailure(healthStatus: 200, infoStatus: 401)`, the user-visible connection error text used the health leg's status → showing a misleading "HTTP 200". Fixed (the authFailure branch of `applyGenerationDetection` now uses `infoStatus ?? healthStatus`, showing "Basic Auth rejected"), with the regression test `authFailureSurfacesInfoLegRejectionNotHealthStatus`. The user's actual problem at the time: in PowerShell, `set X=Y` is cmd syntax and silently has no effect → env not applied → the server printed a random password.
