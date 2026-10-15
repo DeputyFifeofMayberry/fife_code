@@ -65,6 +65,8 @@ jobs:
             dd-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-
 
       - name: Run unit tests
+        env:
+          OPENCODE_SIMULATOR_PREFLIGHT_TIMEOUT: "120"
         run: ./scripts/test_unit.sh
 
       - name: Upload test logs on failure
@@ -108,6 +110,8 @@ jobs:
             dd-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-
 
       - name: Run UI tests
+        env:
+          OPENCODE_SIMULATOR_PREFLIGHT_TIMEOUT: "120"
         run: ./scripts/test_ui.sh
 
       - name: Upload test logs on failure
