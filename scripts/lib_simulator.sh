@@ -55,17 +55,26 @@ else
   SIM_DEST="platform=iOS Simulator,id=$SIM_UDID"
 fi
 
+# simctl boot returns before SpringBoard is ready, especially on cold CI
+# runners. Wait for boot completion before using the short responsiveness probe.
+if ! timeout 180 xcrun simctl bootstatus "$SIM_UDID" -b; then
+  echo "error: simulator did not finish booting within 180s: $SIM_UDID" >&2
+  exit 1
+fi
+
 # --- Preflight: 15s bounded screenshot probe ---------------------------------
 # Full template with X's: GNU mktemp (coreutils on PATH) rejects the bare
 # `mktemp -t prefix` form that BSD mktemp auto-suffixes with X's.
 PROBE_PNG="$(mktemp "${TMPDIR:-/tmp}/occlient-sim-probe.XXXXXXXX").png"
-if ! timeout 15 xcrun simctl io "$SIM_UDID" screenshot "$PROBE_PNG" >/dev/null 2>&1; then
-  echo "error: simulator unresponsive within 15s (wedged?)." >&2
+PROBE_TIMEOUT="${OPENCODE_SIMULATOR_PREFLIGHT_TIMEOUT:-15}"
+if ! timeout "$PROBE_TIMEOUT" xcrun simctl io "$SIM_UDID" screenshot "$PROBE_PNG" >"$PROBE_PNG.log" 2>&1; then
+  cat "$PROBE_PNG.log" >&2
+  echo "error: simulator unresponsive within ${PROBE_TIMEOUT}s (wedged?)." >&2
   echo "fixes, in order:" >&2
   echo "  1. stop concurrent xcodebuild work, wait for load to drop" >&2
   echo "  2. xcrun simctl shutdown $SIM_UDID and rerun this script" >&2
   echo "  3. if concurrency is the norm, point another repo at a different simulator (OPENCODE_TEST_DESTINATION)" >&2
-  rm -f "$PROBE_PNG"
+  rm -f "$PROBE_PNG" "$PROBE_PNG.log" "${PROBE_PNG%.png}"
   exit 1
 fi
-rm -f "$PROBE_PNG"
+rm -f "$PROBE_PNG" "$PROBE_PNG.log" "${PROBE_PNG%.png}"

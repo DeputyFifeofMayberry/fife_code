@@ -10,11 +10,21 @@ import Foundation
 struct AgentInfo: Codable, Identifiable, Hashable {
     var id: String { name }
     
-    let name: String              // Agent name, e.g. "Sisyphus (Ultraworker)"
+    let name: String              // Display name, e.g. "Plan" (agent ID may differ, e.g. "plan")
     let description: String?      // Human-readable description
     let mode: String?             // "primary" or "subagent"
     let hidden: Bool?             // If true, should not be shown in UI
     let native: Bool?             // If true, it's a built-in agent
+    var serverID: String? = nil   // Server agent ID (V2 `/api/agent` "id"); nil on legacy V1 payloads
+
+    /// What to send in switch/prompt requests: the server matches on ID,
+    /// and the plan agent is id "plan" with display name "Plan".
+    var switchID: String { serverID ?? name }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, description, mode, hidden, native
+        case serverID = "id"
+    }
     
     /// Short display name for UI (first word before space or parenthesis)
     var shortName: String {
@@ -38,11 +48,12 @@ struct AgentInfo: Codable, Identifiable, Hashable {
 
     static let fallbackAgentName = "build"
 
-    /// Keep `selection` when the server catalog is empty or contains it.
-    /// Otherwise use the first visible agent, then `fallbackAgentName`.
+    /// Keep `selection` when the server catalog is empty or contains it
+    /// (by display name or server ID). Otherwise use the first visible
+    /// agent, then `fallbackAgentName`.
     static func effectiveSelectedAgent(selection: String, agents: [AgentInfo]) -> String {
         guard !agents.isEmpty else { return selection }
-        if agents.contains(where: { $0.name == selection }) {
+        if agents.contains(where: { $0.name == selection || $0.serverID == selection }) {
             return selection
         }
         return agents.first(where: { $0.isVisible })?.name ?? fallbackAgentName

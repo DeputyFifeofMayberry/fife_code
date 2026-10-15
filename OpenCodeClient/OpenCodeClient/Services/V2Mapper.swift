@@ -674,7 +674,8 @@ nonisolated enum V2Mapper {
                 description: dict["description"] as? String,
                 mode: dict["mode"] as? String,
                 hidden: dict["hidden"] as? Bool,
-                native: nil
+                native: nil,
+                serverID: id
             )
         }
     }
