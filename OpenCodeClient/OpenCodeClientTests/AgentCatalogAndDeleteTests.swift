@@ -116,6 +116,38 @@ struct AgentCatalogAndDeleteTests {
         #expect(state.selectedAgentName == "build")
     }
 
+    @Test @MainActor func sendUsesServerIDForDisplayName() async {
+        let api = MockAPIClient()
+        let state = makeIsolatedAppState(apiClient: api)
+        state.currentSessionID = "s1"
+        state.sessions = [Self.session(id: "s1")]
+        state.agents = [
+            AgentInfo(name: "Plan", description: nil, mode: "primary", hidden: false, native: true, serverID: "plan"),
+        ]
+        state.hasServerAgentCatalog = true
+        state.selectedAgentName = "Plan"
+
+        let sent = await state.sendMessage("hello")
+
+        #expect(sent)
+        #expect(await api.promptAsyncAgents == ["plan"])
+        #expect(state.selectedAgent?.name == "Plan")
+    }
+
+    @Test @MainActor func restoredServerIDSelectsDisplayNameInPicker() {
+        let state = makeIsolatedAppState()
+        state.agents = [
+            AgentInfo(name: "Build", description: nil, mode: "primary", hidden: false, native: true, serverID: "build"),
+            AgentInfo(name: "Plan", description: nil, mode: "primary", hidden: false, native: true, serverID: "plan"),
+        ]
+        state.hasServerAgentCatalog = true
+
+        state.reconcileSelectedAgent(preferredName: "plan")
+
+        #expect(state.selectedAgentIndex == 1)
+        #expect(state.selectedAgent?.name == "Plan")
+    }
+
     @Test @MainActor func loadMessagesDoesNotRewriteSelectionWhenCatalogEmpty() async {
         let api = MockAPIClient()
         let state = makeIsolatedAppState(apiClient: api)
@@ -127,6 +159,17 @@ struct AgentCatalogAndDeleteTests {
         await state.loadMessages()
 
         #expect(state.selectedAgentName == "plan")
+    }
+
+    @Test @MainActor func effectiveSelectedAgentMatchesByServerID() {
+        // A session stored with agent id "plan" must reconcile against the
+        // catalog entry whose display name is "Plan".
+        let agents = [
+            AgentInfo(name: "Plan", description: nil, mode: "primary", hidden: false, native: true, serverID: "plan"),
+        ]
+        #expect(AgentInfo.effectiveSelectedAgent(selection: "plan", agents: agents) == "plan")
+        #expect(AgentInfo.effectiveSelectedAgent(selection: "Plan", agents: agents) == "Plan")
+        #expect(AgentInfo.effectiveSelectedAgent(selection: "grok", agents: agents) == "Plan")
     }
 
     @Test @MainActor func hostSwitchDropsPreviousServerAgent() {

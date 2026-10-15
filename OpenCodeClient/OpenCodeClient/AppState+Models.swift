@@ -41,7 +41,7 @@ extension AppState {
         let selection = preferredName ?? selectedAgentName
         let catalog = hasServerAgentCatalog ? agents : []
         selectedAgentName = AgentInfo.effectiveSelectedAgent(selection: selection, agents: catalog)
-        if let index = visibleAgents.firstIndex(where: { $0.name == selectedAgentName }) {
+        if let index = visibleAgents.firstIndex(where: { $0.name == selectedAgentName || $0.serverID == selectedAgentName }) {
             selectedAgentIndex = index
         } else if !visibleAgents.isEmpty {
             selectedAgentIndex = visibleAgents.count

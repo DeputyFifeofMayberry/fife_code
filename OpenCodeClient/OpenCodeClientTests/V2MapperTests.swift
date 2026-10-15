@@ -345,6 +345,20 @@ struct V2MapperTests {
         #expect(agents[1].native == nil)
     }
 
+    @Test func agentsKeepServerIDForSwitch() throws {
+        // The plan agent is id "plan" with display name "Plan": switches must
+        // send the ID or the session stores an unresolvable agent.
+        let json = #"{"data":[{"id":"plan","name":"Plan","description":"p","mode":"primary","hidden":false}]}"#
+        let agents = V2Mapper.agents(data: Data(json.utf8))
+        #expect(agents.count == 1)
+        #expect(agents[0].name == "Plan")
+        #expect(agents[0].serverID == "plan")
+        #expect(agents[0].switchID == "plan")
+        let unnamed = AgentInfo(name: "build", description: nil, mode: "primary", hidden: false, native: true)
+        #expect(unnamed.serverID == nil)
+        #expect(unnamed.switchID == "build")
+    }
+
     // MARK: - Diff, files, status
 
     @Test func diffFixtureMaps() throws {

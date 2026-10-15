@@ -192,6 +192,8 @@ extension AppState {
         let selection = sessionLoadingID
         let model = selectedModel.map { Message.ModelInfo(providerID: $0.providerID, modelID: $0.modelID) }
         let agentName = agentNameForPrompt()
+        // V2 switches match on agent ID, not display name ("Plan" -> "plan").
+        let agentID = agents.first(where: { $0.name == agentName || $0.serverID == agentName })?.switchID ?? agentName
         let directory = currentSession?.directory ?? effectiveProjectDirectory
         let messageID = Self.makeServerID(prefix: "msg")
         if sessions.first(where: { $0.id == sessionID })?.isArchived == true {
@@ -243,7 +245,7 @@ extension AppState {
                 messageID: messageID,
                 text: text,
                 attachments: attachments,
-                agent: agentName,
+                agent: agentID,
                 model: model,
                 directory: directory
             )
