@@ -271,7 +271,11 @@ private struct CurrentHostCard: View {
                 connectionError: state.connectionError
             )
             if let diagnostic = status.diagnostic {
-                DiagnosticSummaryView(diagnostic: diagnostic)
+                DiagnosticSummaryView(
+                    diagnostic: diagnostic,
+                    hostURL: profile.serverURL,
+                    transportLabel: profile.transport.label
+                )
             }
             if let storageError = status.storageError {
                 Text(storageError)
@@ -279,17 +283,57 @@ private struct CurrentHostCard: View {
                     .foregroundStyle(.red)
             }
             if let connectionError = status.connectionError {
-                Text(connectionError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                HStack(alignment: .top) {
+                    Text(connectionError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    Spacer()
+                    CopyConnectionErrorButton {
+                        ConnectionDiagnostic.copyText(
+                            message: connectionError,
+                            hostURL: profile.serverURL,
+                            transportLabel: profile.transport.label,
+                            phaseLabel: nil,
+                            recoveryHint: nil,
+                            timestamp: nil
+                        )
+                    }
+                }
             }
         }
         .padding(.vertical, 4)
     }
 }
 
+/// Copies a connection error (plus its connection context) to the clipboard,
+/// then flips to a checkmark for two seconds — same feedback pattern as the
+/// SSH public key copy button.
+struct CopyConnectionErrorButton: View {
+    let text: () -> String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            #if !os(visionOS)
+            UIPasteboard.general.string = text()
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false }
+            #endif
+        } label: {
+            Label(
+                copied ? L10n.t(.errorCopied) : L10n.t(.errorCopyButton),
+                systemImage: copied ? "checkmark" : "doc.on.doc"
+            )
+        }
+        .font(.caption2)
+        .accessibilityIdentifier("copy-connection-error")
+    }
+}
+
 struct DiagnosticSummaryView: View {
     let diagnostic: ConnectionDiagnostic
+    var hostURL: String? = nil
+    var transportLabel: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -308,6 +352,21 @@ struct DiagnosticSummaryView: View {
                 Text(recoveryHint)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+            if diagnostic.phase != .connected {
+                HStack {
+                    Spacer()
+                    CopyConnectionErrorButton {
+                        ConnectionDiagnostic.copyText(
+                            message: diagnostic.message,
+                            hostURL: hostURL,
+                            transportLabel: transportLabel,
+                            phaseLabel: diagnostic.phase.label,
+                            recoveryHint: diagnostic.recoveryHint,
+                            timestamp: diagnostic.timestamp
+                        )
+                    }
+                }
             }
         }
     }
@@ -407,7 +466,11 @@ private struct HostProfileDetailView: View {
 
                 if let diagnostic = state.connectionDiagnostic, diagnostic.hostProfileID == profile.id {
                     Section(L10n.t(.hostConnectionDiagnostics)) {
-                        DiagnosticSummaryView(diagnostic: diagnostic)
+                        DiagnosticSummaryView(
+                            diagnostic: diagnostic,
+                            hostURL: profile.serverURL,
+                            transportLabel: profile.transport.label
+                        )
                     }
                     .accessibilityIdentifier("host-detail-diagnostics")
                 }
