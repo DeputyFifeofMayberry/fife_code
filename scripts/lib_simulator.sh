@@ -55,6 +55,13 @@ else
   SIM_DEST="platform=iOS Simulator,id=$SIM_UDID"
 fi
 
+# simctl boot returns before SpringBoard is ready, especially on cold CI
+# runners. Wait for boot completion before using the short responsiveness probe.
+if ! timeout 180 xcrun simctl bootstatus "$SIM_UDID" -b; then
+  echo "error: simulator did not finish booting within 180s: $SIM_UDID" >&2
+  exit 1
+fi
+
 # --- Preflight: 15s bounded screenshot probe ---------------------------------
 # Full template with X's: GNU mktemp (coreutils on PATH) rejects the bare
 # `mktemp -t prefix` form that BSD mktemp auto-suffixes with X's.
