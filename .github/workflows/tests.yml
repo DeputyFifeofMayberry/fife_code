@@ -12,6 +12,11 @@
 #     baked into the cache key so image drift invalidates cleanly.
 #   - lib_simulator.sh uses GNU `timeout`, which stock macOS lacks; coreutils'
 #     gnubin is prepended to PATH.
+#   - `foundation-verify` runs on ubuntu-latest: the verifier self-test, then
+#     `python3 scripts/verify.py --ci` (the Linux-safe categories; the macOS
+#     unit/e2e/build categories report SKIP honestly and are never counted as
+#     success). The macOS `unit-tests` job below remains the required app gate
+#     (docs/STACKS.md rule): Linux-runnable checks alone never verify the app.
 
 name: Tests
 
@@ -34,6 +39,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  foundation-verify:
+    name: Foundation verify (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Self-test the verify gate
+        run: python3 scripts/selftest_verify.py
+
+      - name: Run foundation verify gate
+        run: python3 scripts/verify.py --ci
+
   unit-tests:
     name: Unit tests
     runs-on: macos-15

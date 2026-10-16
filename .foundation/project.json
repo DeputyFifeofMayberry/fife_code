@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "project_name": "fifecode-ios",
+  "checks": {
+    "lint": {
+      "argv": ["python3", "scripts/checks/lint.py"],
+      "timeout_seconds": 300
+    },
+    "typecheck": {
+      "argv": ["python3", "scripts/checks/typecheck.py"],
+      "timeout_seconds": 120
+    },
+    "unit": {
+      "argv": ["python3", "scripts/checks/unit.py"],
+      "timeout_seconds": 3600
+    },
+    "integration": {
+      "argv": ["python3", "scripts/checks/integration.py"],
+      "timeout_seconds": 120
+    },
+    "e2e": {
+      "argv": ["python3", "scripts/checks/e2e.py"],
+      "timeout_seconds": 5400
+    },
+    "build": {
+      "argv": ["python3", "scripts/checks/build.py"],
+      "timeout_seconds": 3600
+    },
+    "security": {
+      "argv": ["python3", "scripts/checks/security.py"],
+      "timeout_seconds": 120
+    },
+    "architecture": {
+      "argv": ["python3", "scripts/checks/architecture.py"],
+      "timeout_seconds": 600
+    }
+  },
+  "required_ci_checks": [
+    "lint",
+    "typecheck",
+    "unit",
+    "integration",
+    "e2e",
+    "build",
+    "security",
+    "architecture"
+  ]
+}
