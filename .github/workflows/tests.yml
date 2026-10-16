@@ -22,6 +22,9 @@
 #     scripts/test_unit.sh with the documented OPENCODE_TEST_DESTINATION
 #     override pinned to an available iPad simulator, so iPadOS layout/
 #     behavior keeps coverage too. Non-required informational check.
+#   - `swiftlint` is a warning-only reporting step (brew-installed SwiftLint,
+#     minimal .swiftlint.yml, continue-on-error): findings are visible in the
+#     job log but can never fail the build until deliberately tightened.
 #   - `visionos-build` compiles the shared scheme for the visionOS Simulator
 #     with the README-documented xcodebuild command, closing the only target
 #     with zero automated build coverage. Non-required informational check.
@@ -290,3 +293,22 @@ jobs:
           path: .occlient/DerivedData/Logs
           retention-days: 7
           if-no-files-found: ignore
+
+  swiftlint:
+    name: SwiftLint (warning-only)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: |
+          brew install swiftlint
+          swiftlint version
+
+      # Warning-only contract: no --strict, continue-on-error. Findings are
+      # reported in the log and GitHub annotations but cannot fail the job
+      # until the config and gate are deliberately tightened.
+      - name: Lint (warnings never fail this job)
+        continue-on-error: true
+        run: swiftlint lint --config .swiftlint.yml
