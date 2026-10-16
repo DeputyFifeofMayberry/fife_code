@@ -98,7 +98,12 @@ final class RelaunchPersistenceUITests: XCTestCase {
         XCTAssertTrue(urlField.waitForExistence(timeout: 10), "host-server-url should exist")
         Tier4DriverSupport.replaceText(in: urlField, with: serverURL)
 
-        let save = app.buttons["host-save"]
+        // Uniqueness guard (LOC-90 P3): resolve host-save by an exact-count
+        // assertion instead of first match, mirroring
+        // Tier4DriverSupport.configureSavedHost.
+        let saves = app.buttons.matching(identifier: "host-save")
+        XCTAssertEqual(saves.count, 1, "host-save should be exactly one Button, not the navigation bar container")
+        let save = saves.element(boundBy: 0)
         XCTAssertTrue(save.waitForExistence(timeout: 10), "host-save Button should exist")
         XCTAssertTrue(save.isEnabled, "host-save should be enabled after required fields")
         save.tap()
