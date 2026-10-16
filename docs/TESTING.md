@@ -57,6 +57,7 @@ probe test uses a saved body). A small number of controlled live checks
 | Subagent busy aggregation | `SessionTreeTests` | 1 | 2026-10-08 invisible work |
 | v2 generation detection/mapping/SSE | `ServerGenerationTests`, `V2MapperTests`, `V2APIWireTests`, `V2SSETests` | 1 | v2 spec table rows |
 | SSH tunnel close races | tunnel manager tests | 1 | 2026 NIO channel-state crash (`docs/WORKING.md` Problem 8) |
+| Selected server profile + saved hosts survive terminate + relaunch | `RelaunchPersistenceUITests` | 2 | relaunch-persistence coverage gap (LOC-89) |
 
 Live runs (Tier 3/4, live contract, TestFlight on-device) are recorded in
 `docs/WORKING.md` and `docs/REVIEW_EVIDENCE.md` when executed.
