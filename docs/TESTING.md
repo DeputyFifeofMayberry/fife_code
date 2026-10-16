@@ -27,6 +27,17 @@ Plus the verifier's own proof: `python3 scripts/selftest_verify.py`
 (`python3 -m unittest discover -s scripts/tests -t scripts`, the carried
 `resize_icon` suite).
 
+## CI cadence
+
+The `Tests` workflow (`.github/workflows/tests.yml`) runs on every push to
+`master`/`dev` and every pull request; `Unit tests` (macOS simulator) and
+`Foundation verify (Linux)` are the branch-protection required checks. The
+`UI tests (manual)` job keeps its on-demand path (`workflow_dispatch` with
+`run_ui_tests`) and additionally runs from a weekly schedule trigger
+(`23 5 * * 1`, Mondays 05:23 UTC), so the Tier 2/4 XCUITest suites get
+non-manual coverage without slowing every pull request. Job steps are
+identical for both triggers.
+
 ## Test design
 
 Prefer observable behavior and contracts over implementation coupling. Every
