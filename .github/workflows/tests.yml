@@ -82,12 +82,7 @@ jobs:
           restore-keys: |
             dd-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-
 
-      # TEMPORARY DIAGNOSTIC (LOC-86): the 400-line tail window in
-      # test_unit.sh dropped the AuthWire suite results; run only that suite
-      # once to expose the single failing test. Revert before merge.
       - name: Run unit tests
-        env:
-          OPENCODE_TEST_ONLY: 'OpenCodeClientTests/AuthWireTests'
         run: ./scripts/test_unit.sh
 
       - name: Upload test logs on failure
