@@ -22,6 +22,9 @@
 #     scripts/test_unit.sh with the documented OPENCODE_TEST_DESTINATION
 #     override pinned to an available iPad simulator, so iPadOS layout/
 #     behavior keeps coverage too. Non-required informational check.
+#   - `visionos-build` compiles the shared scheme for the visionOS Simulator
+#     with the README-documented xcodebuild command, closing the only target
+#     with zero automated build coverage. Non-required informational check.
 
 name: Tests
 
@@ -104,6 +107,57 @@ jobs:
           path: .occlient/DerivedData/Logs
           retention-days: 7
           if-no-files-found: ignore
+
+  visionos-build:
+    name: visionOS build
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        id: xcode
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          echo "selecting $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+          echo "version=$(xcodebuild -version | awk 'NR==1{print $2}')" >> "$GITHUB_OUTPUT"
+
+      # The README command uses a name-only destination, but runner images
+      # can carry several visionOS runtimes (first CI run failed with
+      # "multiple devices matched" for Apple Vision Pro on visionOS 2.5 and
+      # 26.2). Resolve the newest Apple Vision Pro simulator and pin it by
+      # UDID; the remaining flags are exactly the README command.
+      - name: Resolve visionOS Simulator destination
+        id: visionos
+        run: |
+          UDID="$(xcrun simctl list devices available | grep 'Apple Vision Pro' | grep -oE '[0-9A-F-]{36}' | tail -1 || true)"
+          if [ -z "$UDID" ]; then
+            echo "error: no Apple Vision Pro simulator available on this runner image" >&2
+            xcrun simctl list devices available || true
+            exit 1
+          fi
+          echo "using Apple Vision Pro simulator $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: .occlient/DerivedData
+          key: dd-visionos-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-${{ hashFiles('OpenCodeClient/OpenCodeClient.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            dd-visionos-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-
+
+      # The README-documented visionOS build command (README.md, "Building
+      # from Source"), run from the repo root so the project path is stable.
+      - name: Build for visionOS Simulator
+        run: |
+          xcodebuild -project "OpenCodeClient/OpenCodeClient.xcodeproj" \
+            -scheme "OpenCodeClient" \
+            -destination 'platform=visionOS Simulator,id=${{ steps.visionos.outputs.udid }}' \
+            CODE_SIGNING_ALLOWED=NO build
 
   unit-tests-ipad:
     name: Unit tests (iPad)
