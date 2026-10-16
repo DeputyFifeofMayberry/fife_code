@@ -17,6 +17,9 @@
 #     unit/e2e/build categories report SKIP honestly and are never counted as
 #     success). The macOS `unit-tests` job below remains the required app gate
 #     (docs/STACKS.md rule): Linux-runnable checks alone never verify the app.
+#   - `visionos-build` compiles the shared scheme for the visionOS Simulator
+#     with the README-documented xcodebuild command, closing the only target
+#     with zero automated build coverage. Non-required informational check.
 
 name: Tests
 
@@ -93,6 +96,40 @@ jobs:
           path: .occlient/DerivedData/Logs
           retention-days: 7
           if-no-files-found: ignore
+
+  visionos-build:
+    name: visionOS build
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        id: xcode
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          echo "selecting $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+          echo "version=$(xcodebuild -version | awk 'NR==1{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: .occlient/DerivedData
+          key: dd-visionos-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-${{ hashFiles('OpenCodeClient/OpenCodeClient.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            dd-visionos-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-
+
+      # The README-documented visionOS build command (README.md, "Building
+      # from Source"), run from the repo root so the project path is stable.
+      - name: Build for visionOS Simulator
+        run: |
+          xcodebuild -project "OpenCodeClient/OpenCodeClient.xcodeproj" \
+            -scheme "OpenCodeClient" \
+            -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+            CODE_SIGNING_ALLOWED=NO build
 
   ui-tests:
     name: UI tests (manual)
