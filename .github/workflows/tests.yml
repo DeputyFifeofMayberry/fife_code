@@ -1,4 +1,5 @@
-# Unit tests on every push/PR; UI tests opt-in via workflow_dispatch.
+# Unit tests on every push/PR; UI tests opt-in via workflow_dispatch and a
+# weekly scheduled sweep (Monday 05:23 UTC; see docs/TESTING.md).
 #
 # The repo's own runners (scripts/test_unit.sh, scripts/test_ui.sh) do the real
 # work: they pin and boot a simulator, run a bounded preflight probe, and build
@@ -27,6 +28,12 @@ on:
   push:
     branches: [master, dev]
   pull_request:
+  # Weekly non-manual UI-test sweep (Stage C item C3). The ui-tests job is
+  # the only job gated to schedule + workflow_dispatch; every other job in
+  # this file also runs on schedule pushes to the default branch, which is
+  # an accepted weekly full sweep.
+  schedule:
+    - cron: '23 5 * * 1'
   workflow_dispatch:
     inputs:
       run_ui_tests:
@@ -152,7 +159,7 @@ jobs:
     name: UI tests (manual)
     runs-on: macos-15
     timeout-minutes: 90
-    if: github.event_name == 'workflow_dispatch' && inputs.run_ui_tests
+    if: (github.event_name == 'workflow_dispatch' && inputs.run_ui_tests) || github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@v4
 
