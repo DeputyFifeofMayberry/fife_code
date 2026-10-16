@@ -22,3 +22,9 @@ Never declare the project stable merely because it builds: the macOS app
 checks are the app gate, and this Linux host can only demonstrate
 infrastructure health plus the honest SKIP of the macOS trio
 (`docs/STACKS.md`).
+
+## v2.2.1 adoption record (2026-10-16)
+
+Agent Project Foundation v2.2.1 (tag 43d6a5cb913c05919c02ddd3cbc1d15c6d5d4008) adopted on dev via PR #7 (merge dc9cebe96fc801030fdaadcc6de07498b7b24196). Category mapping and project-specific adaptations: see docs/ADOPTION.md and docs/decisions/ADR-0001-fife-foundation.md.
+
+Branch protection enabled on dev and master: required checks Unit tests + Foundation verify (Linux), strict up-to-date, admins included; validated both directions (blocked failing PR #8 probe; this PR validates the passing direction under the same protection).
