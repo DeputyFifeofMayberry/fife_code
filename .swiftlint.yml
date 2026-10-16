@@ -1,0 +1,13 @@
+# Minimal SwiftLint configuration (Stage C item C7, LOC-86).
+#
+# Warning-only by contract: CI runs `swiftlint lint` without --strict inside
+# a continue-on-error step, so findings are reported as job output but can
+# never fail the build. Scope covers the shipped Swift sources (app, unit
+# tests, UI tests); there is no Swift outside OpenCodeClient/.
+#
+# Intentionally no rule customization yet: tighten deliberately (opt-in
+# rules, thresholds, --strict) once the baseline report is reviewed.
+included:
+  - OpenCodeClient/OpenCodeClient
+  - OpenCodeClient/OpenCodeClientTests
+  - OpenCodeClient/OpenCodeClientUITests
