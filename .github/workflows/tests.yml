@@ -130,7 +130,13 @@ jobs:
       # over (first CI run failed the 15s preflight against a Shutdown
       # device). Last match = newest installed iPad runtime, matching the
       # newest Xcode selected above.
-      - name: Pin and boot an available iPad simulator
+      #
+      # Second CI run still failed the 15s probe even though bootstatus had
+      # returned: freshly created iPad simulators can stay screenshot-
+      # unresponsive for minutes after boot. Warm the device up here with a
+      # bounded retry loop (job-local prep only); scripts/test_unit.sh's own
+      # 15s probe remains the single fail-closed arbiter.
+      - name: Pin, boot, and warm up an iPad simulator
         id: ipad
         run: |
           UDID="$(xcrun simctl list devices available | grep -E 'iPad' | grep -oE '[0-9A-F-]{36}' | tail -1 || true)"
@@ -143,6 +149,19 @@ jobs:
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
           xcrun simctl boot "$UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$UDID" -b
+          WARMED=0
+          for attempt in 1 2 3 4 5 6 7 8; do
+            PROBE_PNG="$(mktemp /tmp/ipad-probe.XXXXXXXX).png"
+            if timeout 15 xcrun simctl io "$UDID" screenshot "$PROBE_PNG" >/dev/null 2>&1; then
+              echo "iPad simulator screenshot-responsive (warm-up attempt $attempt)"
+              WARMED=1
+            fi
+            rm -f "$PROBE_PNG"
+            [ "$WARMED" = "1" ] && break
+            echo "warm-up attempt $attempt: not yet responsive; waiting 20s"
+            sleep 20
+          done
+          echo "warm-up finished responsive=$WARMED (test_unit.sh preflight decides final readiness)"
 
       - name: Cache DerivedData
         uses: actions/cache@v4
