@@ -17,6 +17,10 @@
 #     unit/e2e/build categories report SKIP honestly and are never counted as
 #     success). The macOS `unit-tests` job below remains the required app gate
 #     (docs/STACKS.md rule): Linux-runnable checks alone never verify the app.
+#   - `unit-tests-ipad` re-runs the same unit suite through
+#     scripts/test_unit.sh with the documented OPENCODE_TEST_DESTINATION
+#     override pinned to an available iPad simulator, so iPadOS layout/
+#     behavior keeps coverage too. Non-required informational check.
 
 name: Tests
 
@@ -90,6 +94,68 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-logs-${{ github.run_id }}
+          path: .occlient/DerivedData/Logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  unit-tests-ipad:
+    name: Unit tests (iPad)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        id: xcode
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          echo "selecting $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+          echo "version=$(xcodebuild -version | awk 'NR==1{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure GNU timeout for lib_simulator.sh preflight
+        run: |
+          brew install coreutils
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
+      # The runner image decides which iPad simulators exist; pin the first
+      # available one by UDID so the documented OPENCODE_TEST_DESTINATION
+      # override keeps lib_simulator.sh's screenshot preflight working
+      # (it extracts the UDID from `,id=`).
+      - name: Pin an available iPad simulator
+        id: ipad
+        run: |
+          UDID="$(xcrun simctl list devices available | grep -E 'iPad' | grep -oE '[0-9A-F-]{36}' | head -1 || true)"
+          if [ -z "$UDID" ]; then
+            echo "error: no available iPad simulator on this runner image" >&2
+            xcrun simctl list devices available || true
+            exit 1
+          fi
+          echo "pinning iPad simulator $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: .occlient/DerivedData
+          key: dd-ipad-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-${{ hashFiles('OpenCodeClient/OpenCodeClient.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            dd-ipad-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-
+
+      # Same script as the required unit job; only the destination override
+      # differs (scripts/test_unit.sh documents this env var).
+      - name: Run unit tests on iPad destination
+        env:
+          OPENCODE_TEST_DESTINATION: 'platform=iOS Simulator,id=${{ steps.ipad.outputs.udid }}'
+        run: ./scripts/test_unit.sh
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-ipad-logs-${{ github.run_id }}
           path: .occlient/DerivedData/Logs
           retention-days: 7
           if-no-files-found: ignore
