@@ -18,6 +18,10 @@
 #     unit/e2e/build categories report SKIP honestly and are never counted as
 #     success). The macOS `unit-tests` job below remains the required app gate
 #     (docs/STACKS.md rule): Linux-runnable checks alone never verify the app.
+#   - `unit-tests-ipad` re-runs the same unit suite through
+#     scripts/test_unit.sh with the documented OPENCODE_TEST_DESTINATION
+#     override pinned to an available iPad simulator, so iPadOS layout/
+#     behavior keeps coverage too. Non-required informational check.
 #   - `swiftlint` is a warning-only reporting step (brew-installed SwiftLint,
 #     minimal .swiftlint.yml, continue-on-error): findings are visible in the
 #     job log but can never fail the build until deliberately tightened.
@@ -157,6 +161,95 @@ jobs:
             -scheme "OpenCodeClient" \
             -destination 'platform=visionOS Simulator,id=${{ steps.visionos.outputs.udid }}' \
             CODE_SIGNING_ALLOWED=NO build
+
+  unit-tests-ipad:
+    name: Unit tests (iPad)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        id: xcode
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)"
+          echo "selecting $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+          echo "version=$(xcodebuild -version | awk 'NR==1{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure GNU timeout for lib_simulator.sh preflight
+        run: |
+          brew install coreutils
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
+      # The runner image decides which iPad simulators exist; pin the newest
+      # available one by UDID so the documented OPENCODE_TEST_DESTINATION
+      # override keeps lib_simulator.sh's screenshot preflight working
+      # (it extracts the UDID from `,id=`).
+      #
+      # The override branch also skips the script's in-script pin/boot, so
+      # this step boots the device and waits for bootstatus before handing
+      # over (first CI run failed the 15s preflight against a Shutdown
+      # device). Last match = newest installed iPad runtime, matching the
+      # newest Xcode selected above.
+      #
+      # Second CI run still failed the 15s probe even though bootstatus had
+      # returned: freshly created iPad simulators can stay screenshot-
+      # unresponsive for minutes after boot. Warm the device up here with a
+      # bounded retry loop (job-local prep only); scripts/test_unit.sh's own
+      # 15s probe remains the single fail-closed arbiter.
+      - name: Pin, boot, and warm up an iPad simulator
+        id: ipad
+        run: |
+          UDID="$(xcrun simctl list devices available | grep -E 'iPad' | grep -oE '[0-9A-F-]{36}' | tail -1 || true)"
+          if [ -z "$UDID" ]; then
+            echo "error: no available iPad simulator on this runner image" >&2
+            xcrun simctl list devices available || true
+            exit 1
+          fi
+          echo "pinning iPad simulator $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+          WARMED=0
+          for attempt in 1 2 3 4 5 6 7 8; do
+            PROBE_PNG="$(mktemp /tmp/ipad-probe.XXXXXXXX).png"
+            if timeout 15 xcrun simctl io "$UDID" screenshot "$PROBE_PNG" >/dev/null 2>&1; then
+              echo "iPad simulator screenshot-responsive (warm-up attempt $attempt)"
+              WARMED=1
+            fi
+            rm -f "$PROBE_PNG"
+            [ "$WARMED" = "1" ] && break
+            echo "warm-up attempt $attempt: not yet responsive; waiting 20s"
+            sleep 20
+          done
+          echo "warm-up finished responsive=$WARMED (test_unit.sh preflight decides final readiness)"
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: .occlient/DerivedData
+          key: dd-ipad-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-${{ hashFiles('OpenCodeClient/OpenCodeClient.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            dd-ipad-${{ runner.os }}-xcode${{ steps.xcode.outputs.version }}-
+
+      # Same script as the required unit job; only the destination override
+      # differs (scripts/test_unit.sh documents this env var).
+      - name: Run unit tests on iPad destination
+        env:
+          OPENCODE_TEST_DESTINATION: 'platform=iOS Simulator,id=${{ steps.ipad.outputs.udid }}'
+        run: ./scripts/test_unit.sh
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-ipad-logs-${{ github.run_id }}
+          path: .occlient/DerivedData/Logs
+          retention-days: 7
+          if-no-files-found: ignore
 
   ui-tests:
     name: UI tests (manual)
