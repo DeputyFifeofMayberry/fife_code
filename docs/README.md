@@ -1,6 +1,33 @@
 # OpenCode iOS Client Docs Index
 
-> Last updated: 2026-10-12 (the v2 server compatibility implementation lives on the opencodev2-integration branch; the spec docs are indexed here). Consult this index first when looking up any document.
+> Last updated: 2026-10-16 (foundation v2.2.1 adoption: the canonical-doc set below was added; this page stays canonical for features/archive/skills). Consult `INDEX.md` for the knowledge map, this page for per-feature detail.
+
+## Canonical Foundation Docs (v2.2.1 adoption adapters)
+
+These documents are part of the enforced doc gate (`scripts/verify.py`); they adapt foundation requirements to this repo and reference the canonical sources above rather than replacing them. Map: `INDEX.md`. Inventory and adoption record: `COMPONENTS.md`, `ADOPTION.md`.
+
+| File | Role |
+|---|---|
+| `INDEX.md` | Knowledge map: where every fact lives and when each file is updated |
+| `CHECKLISTS.md` | Before-work / definition-of-done gates, merged with the repo build/test rules |
+| `RUNBOOKS.md` | CI lanes, TestFlight/ASC procedures, external controls |
+| `REVIEW_EVIDENCE.md` | Independent review and acceptance evidence contract |
+| `TECH_DEBT.md` | Deferred-work queue (detailed history stays in `WORKING.md`) |
+| `QUALITY_SCORE.md` | Evidence-backed quality scorecard |
+| `BASELINE.md` | Observed repository facts and adoption gate results |
+| `USER_GUIDE.md` | Owner-level app guide |
+| `PRODUCT.md` / `PRODUCT_SENSE.md` | Journeys and product judgment (PRD stays canonical) |
+| `DESIGN.md` / `FRONTEND.md` | Visual acceptance rules and runtime UI verification (`design.md` / `tests.md` stay canonical) |
+| `TESTING.md` | Executable check inventory and risk levels |
+| `SECURITY.md` | Threats, secrets, live-server rules |
+| `RELIABILITY.md` | SSE/reconnect behavior, recovery tests, SLO placeholders |
+| `COMPONENTS.md` / `STACKS.md` / `HARNESS_MAINTENANCE.md` | Component inventory, stack minimum verification sets, harness upkeep |
+| `specs/SPEC_TEMPLATE.md` | Acceptance-criteria template |
+| `agents/` | Implementer/reviewer/debugging/handoff/intake/orchestrator contracts |
+| `orchestration/PAPERCLIP.md` | Orchestrator adapter contract |
+| `decisions/` | ADRs (starts with the foundation adoption ADR) |
+
+Root-level additions: `../CHANGELOG.md` (release-visible summary), `../ARCHITECTURE.md` (module map; RFC stays canonical), `../RESEARCH_DECISION.md` (adoption research decisions).
 
 ## Top-Level Main Documents (Living)
 
