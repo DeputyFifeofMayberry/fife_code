@@ -7,7 +7,12 @@ workflow job in ``.github/workflows/`` and that the job's run steps pass on
 the current tree. Any absent, ambiguous, red, or locally unverifiable job
 (matrix, conditional, environment-, working-directory-, container-, or
 services-dependent, continue-on-error, or without runnable steps) exits
-nonzero, as does any workflow file outside the supported subset. Hosted merge
+nonzero, as does any workflow file that implements a configured required
+check while falling outside the supported subset or that cannot be read.
+Workflow files that
+implement none of the configured required checks (e.g. adopter-owned release
+workflows) are left unvalidated; a required check found only in such a file
+still fails closed through the normal no-match path. Hosted merge
 enforcement is a separate required confirmation documented in
 docs/RUNBOOKS.md (GitHub setup step 6).
 
@@ -72,6 +77,26 @@ def _split_key(value: str) -> tuple[str, str | None]:
         raise WorkflowError(f'expected key: value, got {value!r}')
     rest = rest.strip()
     return key.strip(), (rest or None)
+
+
+def _strip_inline_comment(value: str) -> str:
+    """Drop a trailing YAML comment from a scalar, honoring quoted sections."""
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(value):
+        if quote == '"' and escaped:
+            escaped = False
+            continue
+        if quote:
+            if char == '\\' and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in ('\'', '"'):
+            quote = char
+        elif char == '#' and (index == 0 or value[index - 1] in (' ', '\t')):
+            return value[:index].rstrip()
+    return value
 
 
 def _parse_block_scalar(lines: list[str], start: int, header_indent: int) -> tuple[str, int]:
@@ -152,7 +177,7 @@ def parse_workflow_jobs(text: str, source: str) -> dict[str, Job]:
             if key == 'name':
                 if value is None:
                     raise WorkflowError(f'{source}: job name must be inline')
-                current.name = value.strip('\'"')
+                current.name = _strip_inline_comment(value).strip('\'"')
                 i += 1
                 continue
             if key in BLOCKING_JOB_ATTRS:
@@ -233,6 +258,39 @@ def parse_workflow_jobs(text: str, source: str) -> dict[str, Job]:
     return jobs
 
 
+def _required_jobs_in_unparsed(text: str, names: list[str]) -> list[str]:
+    """Return configured required checks an unparseable workflow still declares (job id or job name).
+
+    Mirrors the parsed matcher: an explicit job display name replaces the job
+    id, so a job id counts only when its job declares no display name.
+    """
+    matched: list[str] = []
+    job_id: str | None = None
+    job_named = False
+
+    def close_job() -> None:
+        if job_id is not None and not job_named and job_id in names and job_id not in matched:
+            matched.append(job_id)
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        indent = _indent(line)
+        if indent == 2:
+            close_job()
+            job_id = stripped[:-1].strip() if stripped.endswith(':') else None
+            job_named = False
+        elif indent == 4 and stripped.startswith('name:'):
+            if job_id is not None:
+                job_named = True
+            candidate = _strip_inline_comment(stripped.partition(':')[2].strip()).strip('\'"')
+            if candidate in names and candidate not in matched:
+                matched.append(candidate)
+    close_job()
+    return matched
+
+
 def _adapt_interpreter(command: str) -> str:
     if shutil.which('python') is not None:
         return command
@@ -294,12 +352,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f'FAIL no workflow files found under {workflow_dir}', file=sys.stderr)
         return 1
     jobs: dict[str, Job] = {}
+    unparsed: list[tuple[str, str, str]] = []
     for path in workflow_files:
+        source = str(path.relative_to(root))
         try:
-            jobs.update(parse_workflow_jobs(path.read_text(encoding='utf-8'), str(path.relative_to(root))))
-        except (WorkflowError, OSError, UnicodeDecodeError) as exc:
-            print(f'FAIL {exc}', file=sys.stderr)
+            text = path.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f'FAIL {source}: workflow file cannot be read: {exc}', file=sys.stderr)
             return 1
+        try:
+            jobs.update(parse_workflow_jobs(text, source))
+        except (WorkflowError, OSError, UnicodeDecodeError) as exc:
+            unparsed.append((source, text, str(exc)))
+    for source, text, error in unparsed:
+        declared = _required_jobs_in_unparsed(text, names)
+        if declared:
+            print(f'FAIL {source}: declares required check(s) {", ".join(declared)} '
+                  f'but cannot be validated: {error}', file=sys.stderr)
+            return 1
+        print(f'NOTE {source}: not validated; implements none of the configured required checks ({error})')
     failures: list[str] = []
     for name in names:
         matches = [
