@@ -28,3 +28,14 @@ infrastructure health plus the honest SKIP of the macOS trio
 Agent Project Foundation v2.2.1 (tag 43d6a5cb913c05919c02ddd3cbc1d15c6d5d4008) adopted on dev via PR #7 (merge dc9cebe96fc801030fdaadcc6de07498b7b24196). Category mapping and project-specific adaptations: see docs/ADOPTION.md and docs/decisions/ADR-0001-fife-foundation.md.
 
 Branch protection enabled on dev and master: required checks Unit tests + Foundation verify (Linux), strict up-to-date, admins included; validated both directions (blocked failing PR #8 probe; this PR validates the passing direction under the same protection).
+
+## v2.2.2 delta record (2026-10-16)
+
+Installed foundation version is now **Agent Project Foundation v2.2.2** (release [v2.2.2](https://github.com/DeputyFifeofMayberry/agent-project-foundation/releases/tag/v2.2.2), commit `ab72c85a36141ce70073f1ffd215de57f5e30635`), superseding v2.2.1 (standard 9). File-level sync, no git-history cherry-pick:
+
+| File | Sync | sha256 |
+| --- | --- | --- |
+| `scripts/check_required_checks.py` | Byte-identical to v2.2.2 tag | `f2eddd13eec6c235351a2e6972434994d26a4b48bd12c5d3703d0ec2f48810e5` |
+| `scripts/selftest_verify.py` | Byte-identical to v2.2.2 tag | `1d61aa0760c9a0f962459e25bb8a9bb5c2258411fb79ea93e9b04a9f775186b5` |
+
+The v2.2.2 validator leaves workflows that implement none of the configured required checks (e.g. adopter-owned release workflows with step-level `env:` secrets, such as `check-testflight.yml`) unvalidated with a "not validated" note instead of failing closed; required-check workflows still fail closed. TD-10 is resolved by this release and unparked in `docs/TECH_DEBT.md`.
