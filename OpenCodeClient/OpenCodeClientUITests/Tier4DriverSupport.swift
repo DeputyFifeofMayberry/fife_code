@@ -40,21 +40,12 @@ enum Tier4DriverSupport {
             XCTAssertTrue(usernameField.waitForExistence(timeout: 10), "host username field should exist")
             XCTAssertTrue(usernameField.isHittable, "host username field should be hittable")
             replaceText(in: usernameField, with: username)
-            // Dismiss the keyboard before revealing host-password: on short
-            // simulators (CI uses a 402x874pt iPhone 16 Pro) the password
-            // field sits behind the keyboard and the form's scroll range
-            // cannot reliably lift it clear, so reveal() returned a
-            // non-hittable element on every CI attempt (runs 38985554002 and
-            // 38993355286). The form defines no onSubmit handlers, so the
-            // keyboard's return key resigns focus.
-            dismissKeyboard(in: app)
         }
         if !password.isEmpty {
             let passwordField = reveal(identifier: "host-password", anchor: "host-username", in: app)
             XCTAssertTrue(passwordField.waitForExistence(timeout: 10), "host-password should exist")
-            XCTAssertTrue(passwordField.isHittable, "host-password should be hittable (frame: \(passwordField.frame))")
+            XCTAssertTrue(passwordField.isHittable, "host-password should be hittable")
             replaceText(in: passwordField, with: password)
-            dismissKeyboard(in: app)
         }
 
         let saves = app.buttons.matching(identifier: "host-save")
@@ -272,16 +263,5 @@ enum Tier4DriverSupport {
             }
         }
         element.typeText(text.isEmpty ? XCUIKeyboardKey.delete.rawValue : text)
-    }
-
-    @MainActor
-    static func dismissKeyboard(in app: XCUIApplication) {
-        guard app.keyboards.count > 0 else { return }
-        app.typeText("\n")
-        var polls = 0
-        while app.keyboards.count > 0 && polls < 10 {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-            polls += 1
-        }
     }
 }
