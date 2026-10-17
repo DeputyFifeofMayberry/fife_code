@@ -109,9 +109,22 @@ final class ToolCardsUITests: XCTestCase {
         let button = app.buttons[identifier]
         XCTAssertTrue(button.waitForExistence(timeout: 6))
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier == %@", identifier)).count, 1)
-        if !button.isHittable {
-            app.swipeUp()
+        // Expanding a detail row grows the transcript above the later cards,
+        // so the next card can land below the fold on short simulators (CI
+        // runs a 402x874pt iPhone 16 Pro; runs 38985554002/38993355286 failed
+        // here with the card at y=922). isHittable alone can miss that case,
+        // so also require the card's center point to be inside the window,
+        // and swipe up, bounded, until both hold.
+        let window = app.frame
+        func onScreen() -> Bool {
+            button.isHittable && window.contains(CGPoint(x: button.frame.midX, y: button.frame.midY))
         }
+        var swipes = 0
+        while !onScreen() && swipes < 4 {
+            app.swipeUp()
+            swipes += 1
+        }
+        XCTAssertTrue(onScreen(), "\(identifier) should be on screen after scrolling (frame: \(button.frame), window: \(window), swipes: \(swipes))")
         button.tap()
     }
 
